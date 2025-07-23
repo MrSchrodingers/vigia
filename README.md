@@ -2,9 +2,7 @@
 
 > **VigIA** é um sistema autônomo de IA projetado para atuar como um supervisor em conversas de negociação. Utilizando uma arquitetura multiagente, ele se integra a plataformas de comunicação para analisar, extrair dados, avaliar o sentimento e tomar decisões estratégicas sobre o andamento das negociações em tempo real.
 
-\<br\>
-
-## 📚 Índice
+## Índice
 
   - [Conceitos Principais: Arquitetura Organizacional de IA](https://www.google.com/search?q=%23-conceitos-principais-arquitetura-organizacional-de-ia)
   - [Arquitetura de Sistema](https://www.google.com/search?q=%23%EF%B8%8F-arquitetura-de-sistema)
