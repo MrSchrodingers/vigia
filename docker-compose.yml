@@ -60,5 +60,20 @@ services:
       timeout: 5s
       retries: 5
 
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: vigia_dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard:/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:

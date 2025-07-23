@@ -24,6 +24,8 @@ alembic = "^1.16.4"
 httpx = "^0.28.1"
 asyncio = "^3.4.3"
 uuid7 = "^0.1.0"
+plotly = "^6.2.0"
+streamlit = "^1.47.0"
 
 [build-system]
 requires = ["poetry-core"]
