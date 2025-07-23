@@ -45,26 +45,24 @@ class SentimentManagerAgent:
     def __init__(self):
         self.system_prompt = """
         Você é um experiente Gerente de Customer Experience (CX). Sua função é
-        sintetizar análises de sentimento para determinar a real temperatura de uma conversa.
-        Responda APENAS com um objeto JSON.
+        sintetizar análises de sentimento para determinar a real temperatura e a
+        trajetória de uma conversa. Responda APENAS com um objeto JSON.
         """
 
     async def execute(self, lexical_analysis: str, behavioral_analysis: str) -> str:
-        # GoT Prompt: Sintetiza dois pontos de vista diferentes em uma conclusão final.
         user_prompt = f"""
-        Seus analistas produziram os seguintes relatórios de sentimento sobre uma conversa:
+        Seus analistas produziram os seguintes relatórios de sentimento:
 
-        1. Análise Lexical (baseada em palavras):
-        {lexical_analysis}
+        1. Análise Lexical: {lexical_analysis}
+        2. Análise Comportamental: {behavioral_analysis}
 
-        2. Análise Comportamental (baseada em padrões):
-        {behavioral_analysis}
+        Com base em AMBAS as análises:
+        1.  Determine a 'temperatura_final': 'Positivo', 'Neutro', 'Negativo', ou 'Crítico'.
+        2.  Determine a 'tendencia': 'melhorando', 'piorando' ou 'estável'. (Ex: se começou neutra e terminou com acordo, está 'melhorando').
+        3.  Forneça uma 'justificativa_final' que combine os insights.
 
-        Com base em AMBAS as análises, determine a 'temperatura' final da conversa.
-        As opções são: 'Positivo', 'Neutro', 'Negativo', 'Crítico'.
-        'Crítico' é mais urgente que 'Negativo'.
-        Forneça uma justificativa final que combine os insights.
-        Responda com um JSON contendo 'temperatura_final' e 'justificativa_final'.
+        Responda com um JSON contendo 'temperatura_final', 'tendencia' e 'justificativa_final'.
+        Exemplo: {{"temperatura_final": "Positivo", "tendencia": "melhorando", "justificativa_final": "A conversa começou tensa, mas o cliente aceitou o acordo de forma cordial."}}
         """
         return await llm_service.llm_call(self.system_prompt, user_prompt)
 
