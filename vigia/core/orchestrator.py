@@ -109,7 +109,7 @@ async def execute_tool_call(tool_call: dict):
         )
         return {"status": "sucesso", "resultado_pipedrive": result}
         
-    elif tool_name and tool_name.lower() == "alertar_supervisor":
+    elif tool_name and tool_name.lower() == "alertarsupervisor":
         logging.warning(f"ALERTA DE SUPERVISOR: {tool_args.get('motivo')}")
         return {"status": "sucesso", "detalhe": "Supervisor alertado."}
         
@@ -155,10 +155,6 @@ async def run_multi_agent_cycle_async(payload: dict):
     final_data_str = department_reports[0]
     final_temp_str = department_reports[1]
     
-    # Convertendo para dict aqui para passar ao Diretor
-    final_data_dict = json.loads(final_data_str)
-    final_data_dict['conversation_id'] = conversation_id
-    
     logging.info(f"Relatório Final de Extração: {final_data_str}")
     logging.info(f"Relatório Final de Temperatura: {final_temp_str}")
 
@@ -168,15 +164,14 @@ async def run_multi_agent_cycle_async(payload: dict):
     logging.info(f"Relatório do Guardião: {guard_report_str}")
     
     logging.info("--- DEPARTAMENTO (async): Diretoria ---")
-    executive_summary = f"""
-    Resumo da Negociação {conversation_id}:
-    - Relatório de Dados Extraídos: {final_data_str}
-    - Relatório de Temperatura da Conversa: {final_temp_str}
-    """
-    director_output = await director_agent.execute(executive_summary, final_data_dict)
+    director_output = await director_agent.execute(final_data_str, final_temp_str, conversation_id)
+    logging.info(f"DEBUG: Tipo da saída do diretor: {type(director_output)}")
+    logging.info(f"DEBUG: Conteúdo da saída do diretor: {director_output}")
     director_decision = {}
-    # Passo 3.5: Execução da Ferramenta, se solicitada
+    
+    # Passo 3.5: Execução da Ferramenta ou Processamento da Decisão
     if isinstance(director_output, dict) and director_output.get("type") == "function_call":
+        logging.info(f"LLM solicitou chamada de função: {director_output}")
         tool_result = await execute_tool_call(director_output)
         director_decision = {
             "acao_executada": director_output.get("name"),
@@ -184,16 +179,36 @@ async def run_multi_agent_cycle_async(payload: dict):
             "resultado_execucao": tool_result
         }
         logging.info(f"Decisão Final do Diretor (via ferramenta): {director_decision}")
+    elif isinstance(director_output, str):
+        try:
+            # Tenta fazer o parse da string JSON para um dicionário
+            director_decision = json.loads(director_output)
+            logging.info(f"Decisão Final do Diretor (estratégica): {director_decision}")
+        except json.JSONDecodeError:
+            logging.error(f"Erro ao decodificar a decisão estratégica em JSON: {director_output}")
+            director_decision = {"erro": "Decisão do diretor malformatada", "conteudo": director_output}
     else:
-        director_decision = json.loads(director_output)
-        logging.info(f"Decisão Final do Diretor (estratégica): {director_decision}")
+        # Caso a saída não seja nem uma chamada de ferramenta nem uma string JSON
+        logging.warning(f"Saída inesperada do diretor: {director_output}")
+        director_decision = {"erro": "Tipo de saída inesperado do diretor", "conteudo": str(director_output)}
         
     # Passo 4: Persistência da Análise no Banco de Dados (Operação Síncrona)
     logging.info("--- Fase de Persistência ---")
     try:
-        extracted_data = json.loads(final_data_str)
-        temp_assessment = json.loads(final_temp_str)
-        
+        try:
+            extracted_data = json.loads(final_data_str)
+            if not isinstance(extracted_data, dict):
+                extracted_data = {"erro": "Relatório de extração não é um objeto JSON", "conteudo": final_data_str}
+        except json.JSONDecodeError:
+            extracted_data = {"erro": "Relatório de extração malformatado", "conteudo": final_data_str}
+
+        try:
+            temp_assessment = json.loads(final_temp_str)
+            if not isinstance(temp_assessment, dict):
+                temp_assessment = {"erro": "Relatório de temperatura não é um objeto JSON", "conteudo": final_temp_str}
+        except json.JSONDecodeError:
+            temp_assessment = {"erro": "Relatório de temperatura malformatado", "conteudo": final_temp_str}
+
         if not isinstance(director_decision, dict):
              raise TypeError(f"A decisão do diretor não é um dicionário válido para salvar: {director_decision}")
 
