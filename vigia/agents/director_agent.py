@@ -37,8 +37,23 @@ class BusinessDirectorAgent:
             })
 
         status = conversation_data.get("status")
+        
+        # --- INÍCIO DA CORREÇÃO ---
+        # Garante que 'valores' e 'prazos' sejam dicionários, mesmo se vierem como strings JSON
         valores = conversation_data.get("valores", {})
+        if isinstance(valores, str):
+            try:
+                valores = json.loads(valores)
+            except json.JSONDecodeError:
+                valores = {}
+
         prazos = conversation_data.get("prazos", {})
+        if isinstance(prazos, str):
+            try:
+                prazos = json.loads(prazos)
+            except json.JSONDecodeError:
+                prazos = {}
+        # --- FIM DA CORREÇÃO ---
         
         data_acordo = prazos.get("data_final_acordada_absoluta")
         data_follow_up = prazos.get("data_follow_up_agendada")

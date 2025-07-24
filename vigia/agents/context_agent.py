@@ -49,9 +49,15 @@ class ContextSynthesizerAgent:
         ]
         
         if deal_info.get('notes'):
-            # Filtra notas vazias e junta as restantes
-            notes_str = " | ".join(note['content'] for note in deal_info['notes'] if note.get('content', '').strip())
-            if notes_str:
+            notes_list = []
+            for note in deal_info['notes']:
+                if isinstance(note, dict) and note.get('content', '').strip():
+                    notes_list.append(note.get('content'))
+                elif isinstance(note, str) and note.strip():
+                    notes_list.append(note)
+            
+            if notes_list:
+                notes_str = " | ".join(notes_list)
                 context_parts.append(f"- Notas do Deal: {notes_str}")
         
         logging.info("Síntese de contexto do Pipedrive concluída.")

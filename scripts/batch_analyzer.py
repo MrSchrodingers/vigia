@@ -3,7 +3,7 @@ import logging
 import asyncio
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-
+import traceback
 from db.session import SessionLocal
 from db import models
 from vigia.core.orchestrator import run_multi_agent_cycle_async
@@ -74,7 +74,10 @@ async def main_async():
         for i, result in enumerate(results):
             conv_id = conversations_to_analyze[i]
             if isinstance(result, Exception):
+                # Esta é a forma correta de imprimir o traceback de um erro capturado pelo asyncio
                 logging.error(f"A análise para a conversa {conv_id} falhou com uma exceção: {result}")
+                tb_lines = traceback.format_exception(type(result), result, result.__traceback__)
+                logging.error("".join(tb_lines))
             elif result is None:
                 logging.warning(f"A análise para a conversa {conv_id} não retornou um resultado (verifique os logs do worker para erros).")
             else:
