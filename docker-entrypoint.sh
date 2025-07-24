@@ -8,6 +8,6 @@ python -m alembic upgrade head
 
 # 2) Inicia Aplicação:
 echo "🚀 Iniciando Aplicação!"
-python -m uvicorn vigia.main_api:app --host 0.0.0.0 --port 8026 --reload --reload-exclude ".git"
+python -m uvicorn vigia.main_api:app --host 0.0.0.0 --port 8026 --reload --reload-dir dashboard/ --reload-dir vigia/ --reload-dir scripts/
 
 echo "===== ENTRYPOINT: Aplicação Inciada! ====="

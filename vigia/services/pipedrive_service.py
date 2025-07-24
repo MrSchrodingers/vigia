@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import Optional
 import httpx
 from ..config import settings
 from datetime import datetime
@@ -82,6 +83,7 @@ async def create_activity(
     person_id: int,
     due_date: str,
     note_summary: str,
+    deal_id: Optional[int] = None,
     subject: str = "Follow-up de Cobrança"
 ) -> dict:
     """Cria uma nova atividade (tarefa) no Pipedrive."""
@@ -97,11 +99,13 @@ async def create_activity(
 
     payload = {
         "subject": subject,
-        "type": "task", # ou 'call', 'meeting', etc.
+        "type": "task",          # ou 'call', 'meeting', etc.
         "due_date": valid_date,
         "person_id": person_id,
         "note": note_summary,
     }
+    if deal_id:                  # só envia se houver negócio associado
+        payload["deal_id"] = deal_id
 
     async with httpx.AsyncClient() as client:
         try:

@@ -45,7 +45,9 @@ async def main_async():
             # Query para encontrar as conversas mais recentes
             query_result = (
                 db.query(models.Conversation.remote_jid)
-                .order_by(models.Conversation.created_at.desc())
+                .join(models.Message)
+                .group_by(models.Conversation.remote_jid)
+                .order_by(func.max(models.Message.message_timestamp).desc())
                 .limit(args.limit)
                 .all()
             )

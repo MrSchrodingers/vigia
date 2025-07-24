@@ -2,6 +2,7 @@ from datetime import datetime
 import logging
 import json
 import asyncio
+import re
 from typing import Tuple
 from sqlalchemy.orm import Session
 
@@ -88,14 +89,20 @@ async def execute_tool_call(tool_call: dict):
             return {"status": "falha", "detalhe": "O telefone do contato não foi fornecido pela IA."}
             
         person_data = await pipedrive_service.find_person_by_phone(telefone)
-        
         if not person_data or not person_data.get("id"):
             logging.warning(f"Pessoa com telefone {telefone} não encontrada no Pipedrive. A atividade não será criada.")
             return {"status": "falha", "detalhe": "Contato não encontrado no Pipedrive."}
 
         person_id = person_data["id"]
+        person_name = person_data["name"]
+        person_name = re.sub(r"\d+", "", person_name).strip()
+        
+        deal_data = await pipedrive_service.find_deal_by_person_name(person_name)
+        deal_id = deal_data["id"] if deal_data else None
+        
         result = await pipedrive_service.create_activity(
             person_id=person_id,
+            deal_id=deal_id or None,
             due_date=tool_args.get("due_date"),          
             note_summary=tool_args.get("note"),       
             subject=tool_args.get("subject")            
