@@ -73,8 +73,8 @@ graph TD
 
 O processamento dentro do worker é dividido em fases e departamentos que operam de forma sequencial e paralela para enriquecer e analisar os dados. **Clique em cada departamento para expandir e ver os detalhes.**
 
-\<details\>
-\<summary\>\<strong\> Fase 1. Departamento de Contexto (Estratégia GAN)\</strong\>\</summary\>
+<details\>
+<summary\><strong\> Fase 1. Departamento de Contexto (Estratégia GAN)\</strong\></summary\>
 
 **Objetivo:** Enriquecer o histórico da conversa com dados externos de um CRM (Pipedrive) antes da análise principal.
 
@@ -88,10 +88,10 @@ graph TD
   - **Agente Minerador de Dados (Gerador):** Busca informações de contatos e negócios no Pipedrive a partir do ID da conversa.
   - **Agente Sintetizador de Contexto (Validador):** Recebe os dados brutos do CRM e os formata em um resumo textual claro e conciso, que é então pré-anexado ao histórico da conversa.
 
-\</details\>
+</details\>
 
-\<details\>
-\<summary\>\<strong\> Fase 2. Departamentos de Extração e Temperatura (Execução Paralela)\</strong\>\</summary\>
+<details\>
+<summary\><strong\> Fase 2. Departamentos de Extração e Temperatura (Execução Paralela)</strong\></summary\>
 
 **Objetivo:** Extrair fatos estruturados e avaliar o sentimento da conversa de forma simultânea.
 
@@ -126,10 +126,10 @@ graph TD
       - **Agente Comportamental:** Foca nos padrões: frequência, uso de caixa alta, velocidade das respostas.
       - **Agente Gerente de Sentimento:** Consolida as duas análises para determinar a "temperatura final" e a "tendência" (se a conversa está melhorando ou piorando).
 
-\</details\>
+</details\>
 
-\<details\>
-\<summary\>\<strong\> Fase 3. Departamentos de Supervisão e Diretoria (Execução Sequencial)\</strong\>\</summary\>
+<details\>
+<summary\><strong\> Fase 3. Departamentos de Supervisão e Diretoria (Execução Sequencial)\</strong\></summary\>
 
 **Objetivo:** Garantir a conformidade dos dados e tomar a decisão estratégica final.
 
@@ -144,7 +144,7 @@ graph TD
   - **Agente de Guarda (Auditor):** Um agente meta que não avalia o conteúdo, mas sim se a estrutura do JSON do departamento de extração está em conformidade com o schema esperado, garantindo a qualidade dos dados.
   - **Agente Diretor:** Recebe os relatórios validados e, seguindo uma árvore de decisão, determina a próxima ação. Ele pode tomar uma decisão estratégica (ex: "Aguardar retorno do cliente") ou acionar uma ferramenta para ações práticas, como criar uma atividade no Pipedrive ou alertar um supervisor humano.
 
-\</details\>
+</details\>
 
 -----
 
