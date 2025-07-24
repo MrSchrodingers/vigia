@@ -17,7 +17,11 @@ class Settings(BaseSettings):
     # --- Evolution API Settings ---
     EVOLUTION_BASE_URL: str
     INSTANCE_NAME: str
-    API_KEY: str # API Key da Evolution
+    API_KEY: str
+    
+    # --- Pipedrive API Settings ---
+    PIPEDRIVE_API_TOKEN: str = ""
+    PIPEDRIVE_DOMAIN: str = ""
     
     # --- Redis Settings ---
     REDIS_HOST: str = "redis"

@@ -62,7 +62,6 @@ async def main_async():
         tasks = []
         for conv_id in conversations_to_analyze:
             payload = {"conversation_id": conv_id}
-            # Adicionamos a execução do orquestrador como uma tarefa na lista
             tasks.append(run_multi_agent_cycle_async(payload))
         
         # Executa todas as tarefas de análise em paralelo

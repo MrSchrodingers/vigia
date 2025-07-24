@@ -1,4 +1,3 @@
-# vigia/agents/guard_agent.py
 from ..services import llm_service
 
 class PromptGuardAgent:

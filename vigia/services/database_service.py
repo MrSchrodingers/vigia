@@ -14,7 +14,7 @@ def save_raw_conversation(db: Session, conversation_jid: str, messages: list[dic
     if not conversation:
         conversation = models.Conversation(remote_jid=conversation_jid)
         db.add(conversation)
-        db.flush() # Para obter o ID da nova conversa
+        db.flush()
 
     # Pega todos os IDs externos das novas mensagens
     incoming_external_ids = {msg['external_id'] for msg in messages if msg.get('external_id')}

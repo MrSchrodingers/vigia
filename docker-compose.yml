@@ -19,6 +19,8 @@ services:
     <<: *app-base
     container_name: vigia_api
     entrypoint: ["sh", "./docker-entrypoint.sh"]
+    environment:
+      WATCHFILES_IGNORE_PATHS: ".git"
     ports:
       - "8026:8026"
 

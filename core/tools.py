@@ -6,12 +6,12 @@ class SalvarDadosNegociacao(BaseModel):
     valor: float = Field(..., description="O valor monetário da negociação.")
     status: str = Field(..., description="O status atual da negociação, ex: 'Em Andamento', 'Acordo Fechado'.")
 
-class CriarDealNoPipedrive(BaseModel):
-    """Cria um novo 'Deal' (Negócio) no Pipedrive com base nos dados da conversa."""
-    titulo_deal: str = Field(..., description="Um título claro para o deal, ex: 'Negociação com João Silva'.")
-    valor_deal: float = Field(..., description="O valor monetário do deal.")
-    nome_contato: str = Field(..., description="Nome da pessoa de contato no Pipedrive.")
-    telefone_contato: str = Field(..., description="Telefone da pessoa de contato para buscar ou criar no Pipedrive.")
+class CriarAtividadeNoPipedrive(BaseModel):
+    """Cria uma nova 'Activity' (Tarefa de follow-up) no Pipedrive para lembrar um operador humano de uma ação necessária."""
+    subject: str = Field(..., description="O título ou assunto da atividade a ser criada. Ex: 'Follow-up sobre acordo com Marcos'.")
+    due_date: str = Field(..., description="A data de vencimento para a atividade, quando a ação precisa ser tomada. Formato estrito: AAAA-MM-DD.")
+    person_phone: str = Field(..., description="O número de telefone da pessoa de contato para associar a atividade.")
+    note: str = Field(..., description="Um resumo conciso da conversa ou o motivo da atividade para ser adicionado como nota.")
 
 class AlertarSupervisor(BaseModel):
     """Envia uma notificação urgente para um supervisor humano."""

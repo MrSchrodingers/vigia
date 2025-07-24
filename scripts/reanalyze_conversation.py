@@ -1,7 +1,7 @@
 import argparse
 import logging
 import json
-import asyncio # Importa a biblioteca asyncio
+import asyncio
 from sqlalchemy.orm import Session
 from typing import Tuple
 from datetime import datetime
@@ -13,6 +13,7 @@ from vigia.agents.manager_agent import manager_agent
 from vigia.agents.sentiment_agents import lexical_sentiment_agent, behavioral_sentiment_agent, sentiment_manager_agent
 from vigia.agents.guard_agent import guard_agent
 from vigia.agents.director_agent import director_agent
+from vigia.core.orchestrator import execute_tool_call, run_context_department, run_extraction_department, run_temperature_department
 from vigia.services import database_service
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,7 +32,6 @@ def fetch_history_and_date_from_db(db: Session, conversation_jid: str) -> Tuple[
     last_message_date = messages[-1].message_timestamp
     return history_text, last_message_date
 
-# CORRIGIDO: A função principal agora é assíncrona
 async def main_async():
     parser = argparse.ArgumentParser(description="Reanalisa uma conversa do banco de dados.")
     parser.add_argument("--conversa", required=True, help="O ID da conversa (remoteJid)")
@@ -41,10 +41,10 @@ async def main_async():
     db: Session = SessionLocal()
     try:
         history_text, last_message_date = fetch_history_and_date_from_db(db, args.conversa)
-        if not history_text or not last_message_date:
+        if not history_text:
             return
 
-        reference_date_str = last_message_date.strftime("%Y-%m-%d")
+        reference_date_str = last_message_date.strftime("%Y-%m-%d") if last_message_date else datetime.now().strftime("%Y-%m-%d")
         
         print("\n--- Histórico da Conversa (do Banco de Dados) ---")
         print(f"--- Data de Referência: {reference_date_str} ---")
@@ -55,33 +55,54 @@ async def main_async():
         # REPLICANDO O FLUXO ASSÍNCRONO COMPLETO DO ORQUESTRADOR
         # ===================================================================
 
-        # Dispara os dois departamentos em paralelo
+        # FASE 1: Contextualização (GAN)
+        enriched_context = await run_context_department(args.conversa)
+    
+        # Combina o contexto com o histórico para as próximas fases
+        full_history = f"{enriched_context}\n\n---\n\nHISTÓRICO DA CONVERSA ORIGINAL:\n{history_text}"
+
+        # FASE 2: Execução Paralela dos Departamentos
         department_reports = await asyncio.gather(
-            run_extraction_department_local(history_text, reference_date_str),
-            run_temperature_department_local(history_text)
+            run_extraction_department(full_history, reference_date_str), 
+            run_temperature_department(history_text)
         )
         final_data_str = department_reports[0]
         final_temp_str = department_reports[1]
         
+        logging.info(f"Relatório Final de Extração: {final_data_str}")
+        logging.info(f"Relatório Final de Temperatura: {final_temp_str}")
+
+        # FASE 3: Meta-Análise e Decisão Final
         logging.info("--- DEPARTAMENTO: Qualidade e Conformidade ---")
         guard_report_str = await guard_agent.execute(manager_agent.system_prompt, final_data_str)
         logging.info(f"Relatório do Guardião: {guard_report_str}")
         
         logging.info("--- DEPARTAMENTO: Diretoria ---")
-        executive_summary = f"""
-        Resumo da Negociação {args.conversa} (analisada em {reference_date_str}):
-        - Relatório de Dados Extraídos: {final_data_str}
-        - Relatório de Temperatura da Conversa: {final_temp_str}
-        """
-        director_decision_str = await director_agent.execute(executive_summary)
-        logging.info(f"Decisão Final do Diretor: {director_decision_str}")
+        director_output = await director_agent.execute(final_data_str, final_temp_str, args.conversa)
+        
+        # LÓGICA DE EXECUÇÃO
+        director_decision = {}
+        if isinstance(director_output, dict) and director_output.get("type") == "function_call":
+            logging.info("Diretor solicitou uma ação, executando a ferramenta...")
+            tool_result = await execute_tool_call(director_output)
+            director_decision = {
+                "acao_executada": director_output.get("name"),
+                "parametros": director_output.get("args"),
+                "resultado_execucao": tool_result
+            }
+            logging.info(f"Resultado da execução da ferramenta: {director_decision}")
+        elif isinstance(director_output, str):
+            director_decision = json.loads(director_output)
+            logging.info(f"Decisão Final do Diretor (estratégica): {director_decision}")
+        else:
+            director_decision = director_output
         
         # Monta o relatório final
         full_report = {
             "extracao_dados": json.loads(final_data_str),
             "analise_temperatura": json.loads(final_temp_str),
             "auditoria_guardiao": json.loads(guard_report_str),
-            "decisao_diretor": json.loads(director_decision_str)
+            "decisao_diretor": director_decision
         }
         
         print("\n--- RELATÓRIO DE REANÁLISE COMPLETO ---")
@@ -93,7 +114,7 @@ async def main_async():
                 database_service.save_analysis_results(
                     db=db,
                     conversation_jid=args.conversa,
-                    messages=[], # Não passamos mensagens, apenas a análise
+                    messages=[],
                     extracted_data=full_report["extracao_dados"],
                     temp_assessment=full_report["analise_temperatura"],
                     director_decision=full_report["decisao_diretor"]

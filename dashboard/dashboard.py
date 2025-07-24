@@ -106,7 +106,6 @@ def read_data() -> pd.DataFrame:
 # FILTROS
 # ------------------------------------------------------------------ #
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
-    st.sidebar.image("https://i.imgur.com/805V22C.png", width=150)
     st.sidebar.title("⚙️  Filtros")
 
     min_d, max_d = df["created_at"].min().date(), df["created_at"].max().date()
