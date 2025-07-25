@@ -78,6 +78,7 @@ async def execute_tool_call(tool_call: dict) -> Dict[str, Any]:
         person_name = person_data["name"]
         
         deal_data = await pipedrive_service.find_deal_by_person_name(whatsapp_client, person_name)
+        logging.info(f"deal_data: {deal_data}")
         deal_id = deal_data["id"] if deal_data else None
         
         result = await pipedrive_service.create_activity(
@@ -132,12 +133,18 @@ async def run_department_pipeline(payload: dict) -> Optional[Dict[str, Any]]:
     
     director_decision = {}
     try:
-        director_output = json.loads(director_output_str)
+        # Verifica se a saída já é um dicionário (caso de chamada de função)
+        if isinstance(director_output_str, dict):
+            director_output = director_output_str
+        else:
+            # Se for uma string, tenta decodificar como JSON
+            director_output = json.loads(director_output_str)
+
         if isinstance(director_output, dict) and director_output.get("type") == "function_call":
             tool_result = await execute_tool_call(director_output)
             director_decision = {"acao_executada": director_output, "resultado_execucao": tool_result}
         else:
-             director_decision = {"decisao_estrategica": director_output}
+            director_decision = {"decisao_estrategica": director_output}
     except (json.JSONDecodeError, TypeError) as e:
         logging.error(f"Não foi possível decodificar a decisão do diretor: {e}")
         director_decision = {"erro": "Decisão do diretor mal formatada", "conteudo": director_output_str}

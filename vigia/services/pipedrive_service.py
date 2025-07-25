@@ -70,6 +70,45 @@ email_client = PipedriveClient(
 )
 
 # --- Funções Auxiliares de Formatação ---
+def _sanitize_person_name(raw: str) -> str:
+    """
+    Remove dígitos e espaços/“+” excedentes do termo de pesquisa.
+
+    Ex.:
+        "  MAURICIO+CASTRO+08 " → "MAURICIO+CASTRO"
+        "JOÃO  SILVA 123"     → "JOÃO  SILVA"
+    """
+    # 1. remove todos os números
+    no_numbers = re.sub(r"\d+", "", raw)
+    # 2. tira espaços em excesso
+    trimmed = no_numbers.strip()
+    # 3. remove "+" só se estiver no começo ou fim (evita '...+08' ficar com '+')
+    trimmed = trimmed.strip("+")
+    # 4. colapsa múltiplos "+" consecutivos (opcional, se for útil)
+    return re.sub(r"\++", "+", trimmed)
+
+def clean_phone(raw: str) -> str:
+    """
+    Normaliza números BR (móvel) para o formato **AA9XXXXXXXX**
+    ─ remove qualquer coisa que não seja dígito
+    ─ remove o prefixo internacional 55, se existir
+    ─ se restarem 10 dígitos (AAXXXXXXXX) insere o 9 logo
+      depois do DDD, resultando em 11 dígitos
+    """
+    # 1 – só dígitos
+    digits = re.sub(r"\D", "", raw)
+
+    # 2 – tira o +55 (ou 0055) se presente
+    if digits.startswith("55"):
+        digits = digits[2:]
+
+    # 3 – se ficou com 10 dígitos, é porque falta o 9
+    #     → AA + 9 + XXXXXXXX
+    if len(digits) == 10:
+        digits = digits[:2] + "9" + digits[2:]
+
+    # 4 – devolve do jeito que o WhatsApp gosta: 11 dígitos
+    return digits
 
 def _format_deal_details(data: Dict[str, Any]) -> Dict[str, Any]:
     """Formata a resposta detalhada de um deal em um dicionário limpo e útil."""
@@ -122,9 +161,8 @@ async def find_deal_by_id(client: PipedriveClient, deal_id: int) -> Optional[Dic
 
 async def find_person_by_phone(client: PipedriveClient, phone: str) -> Optional[Dict[str, Any]]:
     """Busca uma pessoa pelo telefone e retorna seus detalhes completos."""
-    clean_phone_number = re.sub(r"\D", "", phone)
-    logger.debug(f"Buscando pessoa por telefone: {clean_phone_number}")
-    params = {"term": clean_phone_number, "fields": "phone", "search_for_related_items": 1}
+    logger.debug(f"Buscando pessoa por telefone: {clean_phone(phone)}")
+    params = {"term": clean_phone(phone), "fields": "phone,custom_fields", "search_for_related_items": 1}
     data = await client._request("GET", "/persons/search", params=params)
     
     items = data.get("items", []) if data else []
@@ -147,15 +185,22 @@ async def find_person_by_email(client: PipedriveClient, email: str) -> Optional[
             return await find_person_by_id(client, person_id)
     return None
 
-async def find_deal_by_person_name(client: PipedriveClient, person_name: str) -> Optional[Dict[str, Any]]:
-    """Busca um deal pelo nome da pessoa no título e retorna seus detalhes completos."""
-    logger.debug(f"Buscando deal por nome de pessoa: '{person_name}'")
-    params = {"term": person_name, "fields": "title"}
+async def find_deal_by_person_name(
+    client: "PipedriveClient",
+    person_name: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Busca um deal pelo nome da pessoa no título, após sanitizar o termo.
+    """
+    clean_name = _sanitize_person_name(person_name)
+    logger.debug("Buscando deal por nome de pessoa: '%s' (sanitizado de '%s')",
+                 clean_name, person_name)
+
+    params = {"term": clean_name, "fields": "title"}
     data = await client._request("GET", "/deals/search", params=params)
 
-    items = data.get("items", []) if data else []
-    if items:
-        deal_id = items[0].get("item", {}).get("id")
+    for item in data.get("items", []):
+        deal_id = item.get("item", {}).get("id")
         if deal_id:
             return await find_deal_by_id(client, deal_id)
     return None
