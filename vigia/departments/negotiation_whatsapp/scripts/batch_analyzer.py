@@ -6,7 +6,7 @@ from sqlalchemy import func
 import traceback
 from db.session import SessionLocal
 from db import models
-from vigia.core.orchestrator import run_multi_agent_cycle_async
+from vigia.departments.negotiation_whatsapp.core.orchestrator import run_department_pipeline
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -64,7 +64,7 @@ async def main_async():
         tasks = []
         for conv_id in conversations_to_analyze:
             payload = {"conversation_id": conv_id}
-            tasks.append(run_multi_agent_cycle_async(payload))
+            tasks.append(run_department_pipeline(payload))
         
         # Executa todas as tarefas de análise em paralelo
         logging.info(f"Disparando {len(tasks)} análises em paralelo...")

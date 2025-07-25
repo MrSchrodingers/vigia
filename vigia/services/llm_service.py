@@ -2,7 +2,7 @@ import logging
 import httpx
 import google.generativeai as genai
 
-from core import tools
+from vigia.departments.negotiation_whatsapp.core import tools
 from ..config import settings
 
 if settings.LLM_PROVIDER == "gemini" and settings.GEMINI_API_KEY:

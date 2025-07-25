@@ -26,6 +26,7 @@ asyncio = "^3.4.3"
 uuid7 = "^0.1.0"
 plotly = "^6.2.0"
 streamlit = "^1.47.0"
+structlog = "^25.4.0"
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,4 +1,4 @@
-from ..services import llm_service
+from vigia.services import llm_service
 
 class PromptGuardAgent:
     def __init__(self):

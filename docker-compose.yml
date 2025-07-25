@@ -62,20 +62,35 @@ services:
       timeout: 5s
       retries: 5
 
-  dashboard:
+  whatsapp-dashboard:
     build:
-      context: ./dashboard
+      context: ./vigia/departments/negotiation_whatsapp/dashboard
       dockerfile: Dockerfile
-    container_name: vigia_dashboard
+    container_name: whatsapp_vigia_dashboard
     ports:
       - "8501:8501"
     volumes:
-      - ./dashboard:/app
+      - ./vigia/departments/negotiation_whatsapp/dashboard:/app
     env_file:
       - .env
     depends_on:
       postgres:
         condition: service_healthy
+  
+  # email-dashboard:
+  #   build:
+  #     context: ./vigia/departments/negotiation_email/dashboard
+  #     dockerfile: Dockerfile
+  #   container_name: negotiation_email
+  #   ports:
+  #     - "8502:8502"
+  #   volumes:
+  #     - ./vigia/departments/negotiation_email/dashboard:/app
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
 
 volumes:
   postgres_data:

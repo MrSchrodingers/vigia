@@ -1,4 +1,4 @@
-from ..services import llm_service
+from vigia.services import llm_service
 
 class SentimentAnalysisAgent:
     def __init__(self, system_prompt: str):

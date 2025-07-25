@@ -1,4 +1,3 @@
-# scripts/historical_importer.py
 import logging
 import requests
 from collections import defaultdict

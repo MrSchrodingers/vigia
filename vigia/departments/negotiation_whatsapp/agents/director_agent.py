@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from ..services import llm_service
+from vigia.services import llm_service
 
 class BusinessDirectorAgent:
     def __init__(self):
