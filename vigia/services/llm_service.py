@@ -1,9 +1,17 @@
 import logging
 import httpx
 import google.generativeai as genai
+import asyncio  
+import time     
+from collections import deque 
 
 from vigia.departments.negotiation_whatsapp.core import tools
 from ..config import settings
+
+# --- Configuração do Rate Limiter para o Gemini ---
+GEMINI_RPM_LIMIT = 1000  # Requisições por minuto
+GEMINI_WINDOW_SECONDS = 60
+gemini_request_timestamps = deque()
 
 if settings.LLM_PROVIDER == "gemini" and settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -36,7 +44,6 @@ async def llm_call(
     logging.info(f"Chamando LLM provider (async): {settings.LLM_PROVIDER}")
     raw_response = ""
 
-    # Mapeia as ferramentas definidas em Pydantic para o formato do Gemini
     available_tools = {
         "criar_atividade_no_pipedrive": tools.CriarAtividadeNoPipedrive,
         "alertar_supervisor": tools.AlertarSupervisor,
@@ -67,9 +74,25 @@ async def _call_gemini_async(
     use_tools: bool,
     available_tools: dict
 ) -> str | dict:
-    """Versão assíncrona para chamar o Gemini, com suporte a ferramentas."""
+    """Versão assíncrona para chamar o Gemini, com suporte a ferramentas e rate limiting."""
+    now = time.monotonic()
+    
+    # Remove timestamps que já saíram da janela de 60 segundos
+    while gemini_request_timestamps and now - gemini_request_timestamps[0] > GEMINI_WINDOW_SECONDS:
+        gemini_request_timestamps.popleft()
+        
+    # Se o número de requisições na janela atual atingiu o limite, espera
+    if len(gemini_request_timestamps) >= GEMINI_RPM_LIMIT:
+        oldest_request_time = gemini_request_timestamps[0]
+        wait_time = (oldest_request_time + GEMINI_WINDOW_SECONDS) - now
+        logging.warning(f"Limite de requisições do Gemini atingido. Aguardando por {wait_time:.2f} segundos.")
+        await asyncio.sleep(wait_time)
+    
+    # Adiciona o timestamp da requisição atual
+    gemini_request_timestamps.append(time.monotonic())
+
     try:
-        model_name = "gemini-1.5-flash-latest"
+        model_name = "gemini-2.5-flash"
         model = genai.GenerativeModel(
             model_name=model_name,
             system_instruction=system_prompt,
@@ -78,13 +101,10 @@ async def _call_gemini_async(
         
         response = await model.generate_content_async(
             user_prompt,
-            # Força o modelo a usar uma ferramenta se for apropriado
             tool_config={"function_calling_config": "ANY"} if use_tools else None
         )
 
-        # Verifica se o modelo respondeu com uma chamada de função
         if response.candidates and response.candidates[0].content.parts:
-            # Checa se a primeira parte da resposta é uma chamada de função
             part = response.candidates[0].content.parts[0]
             if part.function_call:
                 function_call = part.function_call

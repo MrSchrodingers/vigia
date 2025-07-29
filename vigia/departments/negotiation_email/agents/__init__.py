@@ -1,16 +1,21 @@
+# --- Agentes de Contexto ---
 from .context_agents import EmailDataMinerAgent, ContextSynthesizerAgent
+
+# --- Agentes Especialistas de Extração ---
 from .extraction_specialist_agents import (
     SubjectDataExtractorAgent,
     LegalFinancialSpecialistAgent,
     NegotiationStageSpecialistAgent,
+    EmailBehavioralAgent,
 )
+
+# --- Manager e Diretor (ficam em módulos separados) ---
 from .extraction_manager_agent import EmailManagerAgent
-from .temperature_agents import EmailBehavioralAgent
 from .director_agent import EmailDirectorAgent
 
 # --- Instâncias dos Agentes de Contexto ---
 context_miner_agent = EmailDataMinerAgent()
-context_synthesizer_agent = ContextSynthesizerAgent() 
+context_synthesizer_agent = ContextSynthesizerAgent()
 
 # --- Instâncias dos Agentes de Extração (Especialistas e Gerente) ---
 extraction_subject_agent = SubjectDataExtractorAgent()

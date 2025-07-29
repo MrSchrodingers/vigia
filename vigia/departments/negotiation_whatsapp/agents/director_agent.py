@@ -82,8 +82,10 @@ class BusinessDirectorAgent:
             - Preencha o 'subject' com "Follow-up agendado com {telefone_contato}".
             - Use a 'data_follow_up_agendada' como 'due_date'.
             - A 'note' deve ser uma instrução clara para a ação de follow-up. Ela deve começar destacando a AÇÃO PENDENTE e depois fornecer um breve resumo do contexto. Exemplo: 'AÇÃO: Verificar se o cliente respondeu à proposta de R$ 2.000,00. CONTEXTO: Cliente ficou de dar retorno nesta data após o envio da proposta.' Use o resumo da negociação como base para o contexto.
-
-        3.  **SENÃO** (para todos os outros casos):
+        3.  **SENÃO SE** o relatório de temperatura indicar 'Crítico' E a tendência for 'piorando':
+            - Use a ferramenta 'AlertarSupervisor'.
+            - O 'motivo' deve explicar que a negociação deteriorou e requer intervenção humana imediata.
+        4.  **SENÃO** (para todos os outros casos):
             - Forneça uma decisão estratégica em JSON com 'status_geral', 'proxima_acao_sugerida' e 'detalhes_acao'.
         
         **DADOS DISPONÍVEIS PARA PREENCHER AS FERRAMENTAS:**

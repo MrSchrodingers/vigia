@@ -17,7 +17,9 @@ class PipedriveDataMinerAgent:
         if not person_details:
             return {"person": None, "deal": None}
 
-        deal_details = await pipedrive_service.find_deal_by_person_name(whatsapp_client, person_details["name"])
+        person_id = person_details.get("id")
+        deal_details = await pipedrive_service.find_deals_by_person_id(whatsapp_client, person_id)
+        
         return {"person": person_details, "deal": deal_details}
 
 class ContextSynthesizerAgent:

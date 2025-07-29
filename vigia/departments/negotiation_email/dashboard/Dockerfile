@@ -6,11 +6,6 @@ FROM python:3.10-slim
 # Definimos o diretório padrão dentro do container.
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends locales && \
-    sed -i -e 's/# pt_BR.UTF-8 UTF-8/pt_BR.UTF-8 UTF-8/' /etc/locale.gen && \
-    dpkg-reconfigure --frontend=noninteractive locales
-
 # 3. Copiar e Instalar Dependências
 # Copiamos apenas o arquivo de dependências primeiro. O Docker armazena
 # esta camada em cache. Se o arquivo não mudar, ele não reinstalará tudo.
@@ -28,4 +23,4 @@ EXPOSE 8501
 # 6. Comando de Execução
 # Este é o comando que será executado quando o container iniciar.
 # Ele inicia o servidor do Streamlit, permitindo conexões de qualquer endereço.
-CMD ["streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "dashboard.py", "--server.port=8502", "--server.address=0.0.0.0"]

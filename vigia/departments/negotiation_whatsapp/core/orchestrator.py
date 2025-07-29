@@ -10,6 +10,7 @@ from db import models
 from vigia.services import pipedrive_service
 from vigia.services.pipedrive_service import whatsapp_client
 from vigia.services import database_service
+from vigia.services import llm_service
 from ..agents.manager_agent import manager_agent
 from ..agents.sentiment_agents import lexical_sentiment_agent, behavioral_sentiment_agent, sentiment_manager_agent
 from ..agents.guard_agent import guard_agent
@@ -18,6 +19,39 @@ from ..agents import context_agent, specialist_agents
 
 logger = logging.getLogger(__name__)
 
+async def _run_guarded_specialist(
+    specialist_agent, 
+    history_with_context: str, 
+    reference_date: str
+) -> dict:
+    """
+    Função auxiliar que executa um agente especialista e imediatamente valida sua saída.
+    """
+    # 1. Executa o agente especialista para obter o relatório JSON como string
+    raw_output_str = await specialist_agent.execute(history_with_context, reference_date)
+
+    # 2. Chama o PromptGuardAgent para validar a saída
+    compliance_report_str = await guard_agent.execute(
+        original_prompt=specialist_agent.system_prompt, 
+        agent_output=raw_output_str
+    )
+    compliance_report = json.loads(compliance_report_str)
+
+    # 3. Verifica o resultado da validação
+    if compliance_report.get("compliance_status") == "FALHA":
+        logging.error(f"Falha de conformidade para o agente {type(specialist_agent).__name__}: {compliance_report.get('detalhes')}")
+        # Retorna um objeto vazio ou lança um erro para indicar a falha
+        return {} 
+    
+    # 4. Se passou na validação, retorna o JSON decodificado e limpo
+    try:
+        # Re-usa a função de limpeza que já tínhamos para garantir que é um JSON puro
+        cleaned_json_str = llm_service._clean_llm_response(raw_output_str)
+        return json.loads(cleaned_json_str)
+    except json.JSONDecodeError:
+        logging.error(f"Mesmo passando na conformidade, a saída do agente {type(specialist_agent).__name__} não é um JSON válido: {raw_output_str}")
+        return {}
+    
 def fetch_history_and_date_from_db(db: Session, conversation_jid: str) -> Tuple[str, datetime]:
     """Busca o histórico e a data da ÚLTIMA mensagem de uma conversa no banco."""
     logging.info(f"Buscando histórico e data do DB para: {conversation_jid}")
@@ -42,13 +76,24 @@ async def run_context_department(conversation_jid: str) -> str:
     return await context_agent.context_synthesizer_agent.execute(raw_pipedrive_data)
 
 async def run_extraction_department(history_with_context: str, reference_date: str) -> str:
-    """Executa o sub-pipeline de extração de fatos."""
+    """
+    Executa o sub-pipeline de extração de fatos com validação embutida.
+    """
     logging.info("--- Sub-departamento: Extração de Fatos (WhatsApp) ---")
-    specialist_reports = await asyncio.gather(
-        specialist_agents.cautious_agent.execute(history_with_context, reference_date),
-        specialist_agents.inquisitive_agent.execute(history_with_context, reference_date)
+    
+    # Executa os dois especialistas em paralelo, já com a validação do Guard
+    specialist_reports_json = await asyncio.gather(
+        _run_guarded_specialist(specialist_agents.cautious_agent, history_with_context, reference_date),
+        _run_guarded_specialist(specialist_agents.inquisitive_agent, history_with_context, reference_date)
     )
-    return await manager_agent.execute(specialist_reports, history_with_context, reference_date)
+
+    # O manager_agent agora recebe os relatórios já validados e em formato de objeto Python
+    final_report_str = await manager_agent.execute(
+        extraction_results=[json.dumps(report, ensure_ascii=False) for report in specialist_reports_json], 
+        conversation_history=history_with_context, 
+        current_date=reference_date
+    )
+    return final_report_str
 
 async def run_temperature_department(history: str) -> str:
     """Executa o sub-pipeline de análise de temperatura."""
@@ -75,10 +120,9 @@ async def execute_tool_call(tool_call: dict) -> Dict[str, Any]:
             return {"status": "falha", "detalhe": "Contato não encontrado no Pipedrive."}
 
         person_id = person_data["id"]
-        person_name = person_data["name"]
         
-        deal_data = await pipedrive_service.find_deal_by_person_name(whatsapp_client, person_name)
-        logging.info(f"deal_data: {deal_data}")
+        deal_data = await pipedrive_service.find_deals_by_person_id(whatsapp_client, person_id)
+        logging.info(f"deal_data encontrado para criação de atividade: {deal_data}")
         deal_id = deal_data["id"] if deal_data else None
         
         result = await pipedrive_service.create_activity(

@@ -1,83 +1,116 @@
 import logging
 import requests
 from collections import defaultdict
-
 from db.session import SessionLocal
 from vigia.config import settings
 from vigia.services.database_service import save_raw_conversation
+from vigia.departments.negotiation_whatsapp.scripts.decrypt_whatsapp_media import (
+    decrypt_whatsapp_media,
+)
+from vigia.departments.negotiation_whatsapp.scripts.transcribe_audio_with_whisper import (
+    transcribe_audio_with_whisper,
+)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 RECORDS_PER_PAGE = 50
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def main():
-    logging.info("Iniciando INGESTÃO de histórico da Evolution API para o banco de dados.")
-    
-    current_page = 1
-    total_pages = 1
+SKIP_TYPES = {
+    "videoMessage":     "[VIDEO ENVIADO]",
+    "documentMessage":  "[DOCUMENTO ENVIADO]",
+    "imageMessage":     "[IMAGEM ENVIADA]",
+    "stickerMessage":   "[STICKER ENVIADO]",
+}
+
+
+def _fetch_page(page: int) -> dict:
+    """Chama a Evolution API e devolve o JSON bruto da página solicitada."""
+    resp = requests.post(
+        f"{settings.EVOLUTION_BASE_URL}/chat/findMessages/{settings.INSTANCE_NAME}",
+        headers={"apikey": settings.API_KEY},
+        json={"page": page, "size": RECORDS_PER_PAGE, "sort": "desc"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _handle_audio(msg: dict) -> str:
+    """Baixa, decifra e transcreve uma nota de voz."""
+    audio = msg["message"]["audioMessage"]
+    enc   = requests.get(audio["url"], timeout=30).content
+    plain = decrypt_whatsapp_media(enc, audio["mediaKey"])
+    text  = transcribe_audio_with_whisper(plain) or "TRANSC. FALHOU"
+    return f"[ÁUDIO]: {text}"
+
+
+def main() -> None:
+    logging.info("Iniciando INGESTÃO de histórico da Evolution API.")
+    page, total_pages = 1, 1
     db = SessionLocal()
 
     try:
-        while current_page <= total_pages:
-            logging.info(f"Buscando página {current_page}/{total_pages}...")
-            response = requests.post(
-                f"{settings.EVOLUTION_BASE_URL}/chat/findMessages/{settings.INSTANCE_NAME}",
-                headers={"apikey": settings.API_KEY},
-                json={"page": current_page, "size": RECORDS_PER_PAGE, "sort": "desc"} # 'desc' para pegar os mais recentes primeiro
-            )
-            response.raise_for_status()
-            data = response.json()
-            
+        while page <= total_pages:
+            logging.info("Buscando página %s/%s…", page, total_pages)
+            data    = _fetch_page(page)
             records = data.get("messages", {}).get("records", [])
             if not records:
-                logging.info("Nenhuma mensagem nesta página. Concluindo.")
                 break
 
-            # Processa e agrupa as mensagens da página atual
-            conversations_in_page = defaultdict(list)
+            grouped = defaultdict(list)
+
             for msg in records:
-                conversation_id = msg.get("key", {}).get("remoteJid")
-                external_id = msg.get("key", {}).get("id")
-                if not conversation_id or not external_id: 
+                conv_id = msg["key"].get("remoteJid")
+                ext_id  = msg["key"].get("id")
+                if not conv_id or not ext_id:
                     continue
-                
-                sender = "Negociador" if msg.get("key", {}).get("fromMe") else "Cliente"
-                timestamp = msg.get("messageTimestamp", 0)
-                message_type = msg.get("messageType")
-                text_content = ""
 
-                if message_type == "conversation":
-                    text_content = msg.get("message", {}).get("conversation", "")
-                elif message_type == "audioMessage":
-                    text_content = "[MENSAGEM DE ÁUDIO]"
-                elif message_type == "documentMessage":
-                    filename = msg.get("message", {}).get("documentMessage", {}).get("fileName", "documento")
-                    text_content = f"[DOCUMENTO ENVIADO: {filename}]"
-                elif message_type == "imageMessage":
-                    text_content = "[IMAGEM ENVIADA]"
+                msg_type   = msg.get("messageType")
+                sender     = "Negociador" if msg["key"].get("fromMe") else "Cliente"
+                timestamp  = msg.get("messageTimestamp", 0)
+
+                # ─── 1. TEXTOS ────────────────────────────────────────────
+                if msg_type == "conversation":
+                    text = msg["message"]["conversation"].strip()
+
+                # ─── 2. ÁUDIOS ────────────────────────────────────────────
+                elif msg_type == "audioMessage":
+                    try:
+                        text = _handle_audio(msg)
+                    except Exception as e:
+                        logging.error("Falha no áudio %s: %s", ext_id, e)
+                        text = "[FALHA ÁUDIO]"
+
+                # ─── 3. OUTRAS MÍDIAS (placeholder) ─────────────────────
+                elif msg_type in SKIP_TYPES:
+                    text = SKIP_TYPES[msg_type]
+
+                # ─── 4. QUALQUER OUTRO TIPO ─────────────────────────────
                 else:
-                    text_content = f"[{message_type}]"
-                
-                if text_content and text_content.startswith("*") and ":*" in text_content:
-                    text_content = text_content.split(":*", 1)[-1].strip()
+                    text = f"[{msg_type.upper()}]"
 
-                conversations_in_page[conversation_id].append({
-                    "sender": sender, "text": text_content, "timestamp": timestamp, "external_id": external_id
-                })
+                if text.startswith("*") and ":*" in text:
+                    text = text.split(":*", 1)[-1].strip()
 
-            # Salva todas as conversas processadas da página no banco de dados
-            for conv_id, messages in conversations_in_page.items():
-                save_raw_conversation(db=db, conversation_jid=conv_id, messages=messages)
+                grouped[conv_id].append(
+                    dict(sender=sender, text=text,
+                         timestamp=timestamp, external_id=ext_id)
+                )
 
-            logging.info(f"Página {current_page} processada e salva no banco.")
+            for conv_id, msgs in grouped.items():
+                save_raw_conversation(db, conversation_jid=conv_id, messages=msgs)
+
+            page += 1
             total_pages = data.get("messages", {}).get("pages", 1)
-            current_page += 1
 
-    except Exception as e:
-        logging.error(f"Erro durante a ingestão: {e}", exc_info=True)
+    except Exception:
+        logging.exception("Erro durante ingestão")
     finally:
         db.close()
-            
-    logging.info("Ingestão de dados brutos finalizada.")
+        logging.info("Ingestão finalizada.")
+
 
 if __name__ == "__main__":
     main()

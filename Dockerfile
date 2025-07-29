@@ -1,54 +1,50 @@
-# --- Estágio de Build ---
+# ---------- 1. BUILD ---------------------------------------------------------
     FROM python:3.12-slim AS builder
 
     ENV PYTHONUNBUFFERED=1 \
         PIP_NO_CACHE_DIR=1 \
-        POETRY_HOME="/opt/poetry" \
-        POETRY_VIRTUALENVS_CREATE=false
-    
-    ENV PATH="${POETRY_HOME}/bin:${PATH}"
+        POETRY_HOME=/opt/poetry \
+        POETRY_VIRTUALENVS_CREATE=false \
+        PATH="$POETRY_HOME/bin:$PATH"
     
     WORKDIR /app
     
+    # --- sistema -----------------------------------------------------------------
     RUN apt-get update && \
-        apt-get install -y --no-install-recommends build-essential libpq-dev curl && \
-        curl -sSL https://install.python-poetry.org | python3 - && \
-        poetry --version && \
-        poetry config virtualenvs.create false && \
-        apt-get purge -y --auto-remove build-essential curl && \
+        apt-get install -y --no-install-recommends build-essential curl git && \
         rm -rf /var/lib/apt/lists/*
     
+    # --- wheels essenciais -------------------------------------------------------
+    RUN pip install --upgrade pip wheel && \
+        # 1) NumPy 1.x (compat‑torch)
+        pip install "numpy<2" && \
+        # 2) PyTorch/Audio CPU (builds para py3.12)
+        pip install --no-deps \
+            torch==2.2.2+cpu \
+            torchaudio==2.2.2+cpu \
+            --index-url https://download.pytorch.org/whl/cpu
+    
+    # --- Poetry ------------------------------------------------------------------
+    RUN curl -sSL https://install.python-poetry.org | python3 - && \
+        ln -s $POETRY_HOME/bin/poetry /usr/local/bin/poetry
+    
     COPY pyproject.toml poetry.lock ./
-    RUN poetry install --no-interaction --no-ansi --only main --no-root
+    # instalamos tudo **exceto** o grupo 'whisper'
+    RUN poetry install --only main --no-root --no-interaction --no-ansi
     
+    # --- Whisper (CPU) -----------------------------------------------------------
+    RUN pip install --no-deps openai-whisper==20250625
     
-    # --- Estágio de Runtime ---
-    FROM python:3.12-slim AS runtime
+    # ---------- 2. RUNTIME -------------------------------------------------------
+    FROM python:3.12-slim
     
-    ENV PYTHONUNBUFFERED=1 \
-        APP_USER=appuser
+    RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
+        rm -rf /var/lib/apt/lists/*
     
     WORKDIR /app
-    
-    RUN apt-get update && \
-        apt-get install -y --no-install-recommends libpq5 && \
-        rm -rf /var/lib/apt/lists/* && \
-        groupadd -r ${APP_USER} && \
-        useradd --no-log-init -r -g ${APP_USER} ${APP_USER}
-    
-    # Copia as dependências e binários instalados
     COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
     COPY --from=builder /usr/local/bin /usr/local/bin
-    
-    # Copia o código da aplicação
     COPY ./vigia ./vigia
-    
-    # Copia entrypoint Docker de Migrations
-    COPY docker-entrypoint.sh docker-entrypoint.sh
-    RUN chmod +x docker-entrypoint.sh
-
-    RUN chown -R ${APP_USER}:${APP_USER} /app
-    USER ${APP_USER}
     
     EXPOSE 8026
     CMD ["python", "-m", "uvicorn", "vigia.main_api:app", "--host", "0.0.0.0", "--port", "8026"]

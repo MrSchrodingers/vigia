@@ -19,22 +19,15 @@ class EmailDataMinerAgent:
     4.  Este método é mais preciso e eficiente, pois o número do processo é um 
         identificador forte e único.
     """
+    _rx_num   = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}")
+    _rx_party = re.compile(r'(?:PARTE|NOME)\s*:?\s*(.*?)(?:\s*-\s*GRUPO|\s*$)', re.I)
+
     @staticmethod
     def _extract_info_from_subject(subject: str) -> Tuple[Optional[str], Optional[str]]:
-        """Extrai o número do processo e o nome da parte do assunto do e-mail."""
-        lawsuit_number, party_name = None, None
-
-        # Tenta extrair o número do processo
-        lawsuit_match = re.search(r'(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})', subject)
-        if lawsuit_match:
-            lawsuit_number = lawsuit_match.group(1)
-
-        # Tenta extrair o nome da parte, que geralmente está entre "PARTE:" e um possível " - "
-        party_match = re.search(r'PARTE:\s*(.*?)(?:\s*-\s*GRUPO|\s*$)', subject, re.IGNORECASE)
-        if party_match:
-            party_name = party_match.group(1).strip()
-            
-        return lawsuit_number, party_name
+        num  = EmailDataMinerAgent._rx_num.search(subject)
+        name = EmailDataMinerAgent._rx_party.search(subject)
+        return (num.group(0) if num else None,
+                name.group(1).strip() if name else None)
 
     async def execute(self, subject: str) -> Dict[str, Any]:
         logger.info(f"Minerador (E-mail): Iniciando busca com o assunto: '{subject}'")

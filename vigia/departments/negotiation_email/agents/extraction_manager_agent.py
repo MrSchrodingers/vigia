@@ -1,24 +1,38 @@
-from vigia.services import llm_service
+from .base_llm_agent import BaseLLMAgent
 
-class EmailManagerAgent:
-    """Gerente (GoT): Consolida os relatórios dos especialistas de extração em um único JSON."""
+class EmailManagerAgent(BaseLLMAgent):
     def __init__(self):
-        self.system_prompt = """
-        Você é o gerente de análise. Sua tarefa é consolidar múltiplos relatórios JSON de seus especialistas em um único relatório final coeso.
-        Os relatórios são: dados do assunto, análise jurídico-financeira e estágio da negociação.
-        Combine todas as informações em um único objeto JSON, eliminando redundâncias e garantindo uma estrutura clara e completa.
-        Não invente dados. Se um campo não estiver presente nos relatórios de entrada, não o inclua.
-        Retorne APENAS o objeto JSON consolidado.
+        specific_prompt = """
+        Una 3 relatórios JSON em 1:
+        • Preserve todas as chaves únicas.
+        • Se duas chaves colidem, prefira a não-nula; se ambas não-nulas, use a mais recente
+          (considerando ordem Stage → Legal → Subject).
+        • Ordem de saída: assunto ▸ proposta ▸ estágio ▸ argumentos ▸ status.
+        Retorne apenas o JSON consolidado.
         """
-    async def execute(self, subject_data: str, legal_financial_data: str, stage_data: str) -> str:
-        combined_input = f"""
-        RELATÓRIO 1 (Dados do Assunto):
-        {subject_data}
+        super().__init__(specific_prompt)
 
-        RELATÓRIO 2 (Análise Jurídico-Financeira):
-        {legal_financial_data}
+    async def execute(self, *reports: str) -> str:
+        joined = "\n\n---\n\n".join(reports)
+        return await self._llm_call(joined)
 
-        RELATÓRIO 3 (Estágio da Negociação):
-        {stage_data}
+
+class EmailDirectorAgent(BaseLLMAgent):
+    def __init__(self):
+        specific_prompt = """
+        Dada a análise consolidada (dados + temperatura) escolha **UMA** ação:
+        Ferramentas = ["create_draft_reply","forward_to_department",
+                       "Calendar","alert_supervisor"].
+        • Se nenhuma ação prática necessária → devolva {"resumo_estrategico": str}.
+        • Caso contrário → {"acao":{"nome_ferramenta": str,"parametros":{...}}}.
         """
-        return await llm_service.llm_call(self.system_prompt, combined_input)
+        super().__init__(specific_prompt)
+
+    async def execute(self, extraction_report: str, temperature_report: str,
+                      conversation_id: str) -> str:
+        context = (
+            f"ID_CONVERSA: {conversation_id}\n\n"
+            f"=== RELATÓRIO DADOS ===\n{extraction_report}\n\n"
+            f"=== RELATÓRIO TEMPERATURA ===\n{temperature_report}"
+        )
+        return await self._llm_call(context)

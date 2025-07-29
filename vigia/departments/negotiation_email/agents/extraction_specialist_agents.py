@@ -1,48 +1,78 @@
-from vigia.services import llm_service
+import json
+from .base_llm_agent import BaseLLMAgent
 
-class SubjectDataExtractorAgent:
-    """Especialista #1: Focado em extrair dados estruturados SOMENTE do assunto do e-mail."""
+### 2.1 Assunto #############################################################
+class SubjectDataExtractorAgent(BaseLLMAgent):
     def __init__(self):
-        self.system_prompt = """
-        Sua única tarefa é extrair o número do processo e o nome da parte do assunto de um e-mail.
-        O nome da parte geralmente vem depois de "PARTE:".
-        Retorne APENAS um objeto JSON com as chaves "numero_processo" e "nome_parte".
-        Se uma informação não for encontrada, retorne null para essa chave.
-
-        Input: "RES: PROPOSTA DE ACORDO: 0004784-62.2025.8.16.0021 - PARTE: EDIMAR KAMIEN"
-        Output:
-        {
-            "numero_processo": "0004784-62.2025.8.16.0021",
-            "nome_parte": "EDIMAR KAMIEN"
-        }
+        specific_prompt = """
+        Extraia "numero_processo" (regex \\d{7}-\\d{2}\\.\\d{4}\\.\\d\\.\\d{2}\\.\\d{4})
+        e "nome_parte" (texto após "PARTE:").
+        Retorne somente JSON {"numero_processo": str|null, "nome_parte": str|null}.
         """
+        few_shot = '''
+        Input: "RES: PROPOSTA DE ACORDO – 0004784-62.2025.8.16.0021 - PARTE: EDIMAR KAMIEN"
+        Output: {"numero_processo":"0004784-62.2025.8.16.0021", "nome_parte":"EDIMAR KAMIEN"}
+        '''
+        super().__init__(specific_prompt, few_shot)
+
     async def execute(self, subject: str) -> str:
-        return await llm_service.llm_call(self.system_prompt, subject)
+        return await self._llm_call(subject)
 
-class LegalFinancialSpecialistAgent:
-    """Especialista #2: Analisa o CORPO do e-mail em busca de termos jurídicos e financeiros."""
+### 2.2 Legal/Financeiro ####################################################
+class LegalFinancialSpecialistAgent(BaseLLMAgent):
     def __init__(self):
-        self.system_prompt = """
-        Você é um analista paralegal sênior com foco em finanças. Analise o corpo da thread de e-mails.
-        Sua missão é extrair:
-        1.  Dados da Proposta: Qualquer valor monetário (proposta_valor), prazo para pagamento (proposta_prazo) e condições (ex: parcelamento, à vista).
-        2.  Argumentos Jurídicos: Principais argumentos usados pela outra parte (ex: "cita o artigo 5", "alega hipossuficiência").
-        3.  Status do Acordo: A proposta foi aceita, rejeitada ou está em negociação?
-
-        Retorne APENAS um objeto JSON com as chaves "proposta", "argumentos_legais" e "status_acordo".
+        specific_prompt = """
+        Extraia JSON:
+        {
+          "proposta": {
+              "proposta_valor": str|null,
+              "proposta_prazo": str|null,
+              "condicoes": list[str]
+          },
+          "argumentos_legais": list[str],
+          "status_acordo": str|null
+        }
+        * Valores monetários: inclua "R$" + números encontrados primeiro.
+        * Prazo: busque "dia", "dias", "úteis", "parcel" etc.
+        * Condições: array de sentenças encontradas com "pagamento", "conta", "assinatura"…
         """
-    async def execute(self, email_body: str) -> str:
-        return await llm_service.llm_call(self.system_prompt, email_body)
+        super().__init__(specific_prompt)
 
-class NegotiationStageSpecialistAgent:
-    """Especialista #3: Identifica o estágio e o tom da negociação a partir do corpo do e-mail."""
+    async def execute(self, email_body: str) -> str:
+        return await self._llm_call(email_body)
+
+### 2.3 Stage ###############################################################
+class NegotiationStageSpecialistAgent(BaseLLMAgent):
     def __init__(self):
-        self.system_prompt = """
-        Você é um especialista em comunicação. Analise a conversa e identifique o estágio atual da negociação.
-        Estágios possíveis: "Proposta Inicial", "Contraproposta", "Esclarecimento de Dúvidas", "Acordo Fechado", "Negociação Estagnada", "Acordo Rejeitado".
-        Identifique também o "tom_da_conversa" (ex: "Colaborativo", "Hostil", "Neutro", "Urgente").
-
-        Retorne APENAS um objeto JSON com as chaves "estagio_negociacao" e "tom_da_conversa".
+        specific_prompt = """
+        Classifique "estagio_negociacao" em:
+        ["Proposta Inicial","Contraproposta","Esclarecimento de Dúvidas",
+         "Acordo Fechado","Negociação Estagnada","Acordo Rejeitado"].
+        Classifique "tom_da_conversa":
+        ["Colaborativo","Neutro","Hostil","Urgente"].
+        Retorne {"estagio_negociacao": str, "tom_da_conversa": str}.
         """
+        super().__init__(specific_prompt)
+
     async def execute(self, email_body: str) -> str:
-        return await llm_service.llm_call(self.system_prompt, email_body)
+        return await self._llm_call(email_body)
+
+### 2.4 Comportamental ######################################################
+class EmailBehavioralAgent(BaseLLMAgent):
+    def __init__(self):
+        specific_prompt = """
+        Com base nos metadados JSON, gere:
+        {
+          "engajamento": int 0‑10,
+          "urgencia": int 0‑10,
+          "resumo_comportamental": str
+        }
+        • importance=="high" → +4 urgencia
+        • has_attachments==True → +2 engajamento
+        • reply_latency_sec<3600 → +3 engajamento
+        Normalize p/ faixa 0‑10 (cap).
+        """
+        super().__init__(specific_prompt)
+
+    async def execute(self, metadata_json: dict[str, any]) -> str:
+        return await self._llm_call(json.dumps(metadata_json, ensure_ascii=False, indent=2))

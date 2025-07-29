@@ -1,504 +1,452 @@
 # -*- coding: utf-8 -*-
 """
-Dashboard de Análises – v2.3
-----------------------------
-• Pool de conexões + SELECT enxuto
-• Normalização JSON automática
-• Localização de colunas por substring (à prova de prefixos)
-• Métricas e visualizações interativas
-• Busca e consolidação de colunas de valor robusta
+Dashboard de Análise de Negociações – WhatsApp v4.1-b
+----------------------------------------------------
+• Todas as abas implementadas (KPIs, Negociações, Insights, Avançadas)
+• Modelagens em statsmodels (OLS & Logit)
+• Resumo financeiro, heat-maps, CAGR, ACF, etc.
 """
-
-# ------------------------------------------------------------------ #
+# --------------------------------------------------------------------------
 # DEPENDÊNCIAS
-# ------------------------------------------------------------------ #
+# --------------------------------------------------------------------------
 import os
 import json
+import textwrap
 import warnings
+from datetime import timedelta
+import locale
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
+import statsmodels.formula.api as smf
+from statsmodels.tools.sm_exceptions import PerfectSeparationError
 
-# libs analíticas
 warnings.filterwarnings("ignore", category=FutureWarning)
-try:
-    from sklearn.cluster import KMeans
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import LinearRegression
-except ImportError:
-    KMeans = StandardScaler = LinearRegression = None
+locale.setlocale(locale.LC_ALL, "pt_BR.UTF-8")
 
-# ------------------------------------------------------------------ #
-# CONFIG STREAMLIT
-# ------------------------------------------------------------------ #
-st.set_page_config(
-    page_title="Vigia | Dashboard de Análises",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# --------------------------------------------------------------------------
+# CONFIGS
+# --------------------------------------------------------------------------
+st.set_page_config(page_title="Vigia | Dashboard WhatsApp",
+                   page_icon="🤖", layout="wide")
+PLOTLY_TEMPLATE = "plotly_dark"
 
-# ------------------------------------------------------------------ #
-# VARIÁVEIS DE AMBIENTE / DB
-# ------------------------------------------------------------------ #
 DB_URI = (
     f"postgresql+psycopg2://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
     f"@{os.getenv('DB_HOST', 'postgres')}:5432/{os.getenv('POSTGRES_DB')}"
 )
-JSON_COLUMNS = ("extracted_data", "temperature_assessment", "director_decision")
+JSON_COLUMNS = ["extracted_data", "temperature_assessment", "director_decision"]
 
-# ------------------------------------------------------------------ #
-# HELPERS
-# ------------------------------------------------------------------ #
-def find_col(df: pd.DataFrame, substrings: list[str]) -> str | None:
-    """Busca a primeira coluna que contém qualquer uma das substrings (case-insensitive)."""
-    for sub in substrings:
-        sub = sub.lower()
-        for col in df.columns:
-            if sub in col.lower():
-                return col
+# --------------------------------------------------------------------------
+# UTILITÁRIOS
+# --------------------------------------------------------------------------
+def fmt_moeda(valor: float) -> str:
+    try:
+        # 'n'           → formato numérico respeitando locale
+        # replace …     → garante espaço fino depois de R$
+        return f"R$\u202F{locale.format_string('%.2f', valor, grouping=True)}"
+    except ValueError:
+        # fallback se o locale pt_BR não existir no container
+        parte_int, parte_dec = f"{valor:,.2f}".split(".")
+        parte_int = parte_int.replace(",", ".")      # 189.873
+        return f"R$\u202F{parte_int},{parte_dec}"    # 189.873,87
+    
+def find_col(df: pd.DataFrame, keys: list[str]) -> str | None:
+    for k in keys:
+        for c in df.columns:
+            if k.lower() in c.lower():
+                return c
     return None
 
+def wrap_text(s: str, width: int = 60) -> str:
+    """Trunca texto longo e acrescenta reticências."""
+    if not isinstance(s, str) or len(s) <= width:
+        return s
+    return textwrap.shorten(s, width, placeholder="…")
 
-@st.cache_data(ttl="10m", show_spinner=True)
-def read_data() -> pd.DataFrame:
-    engine = create_engine(DB_URI, poolclass=QueuePool, pool_size=3, max_overflow=2)
+@st.cache_data(ttl=timedelta(minutes=5), show_spinner="🔄 Carregando dados…")
+def read_whatsapp_data() -> pd.DataFrame:
+    """Consulta somente conversas de WhatsApp e faz o parsing/flatten."""
+    engine = create_engine(DB_URI, poolclass=QueuePool, pool_size=3)
+    sql = """
+      SELECT a.id, a.analysable_id, c.remote_jid, a.created_at,
+             a.extracted_data, a.temperature_assessment, a.director_decision
+      FROM analyses a
+      JOIN conversations c ON CAST(a.analysable_id AS UUID) = c.id
+      WHERE c.remote_jid LIKE '%%@s.whatsapp.net%%'
+    """
     with engine.connect() as conn:
-        df = pd.read_sql(
-            f"SELECT id, conversation_id, created_at, {', '.join(JSON_COLUMNS)} FROM analyses",
-            conn,
-        )
+        df = pd.read_sql(sql, conn)
+    if df.empty:
+        return df
 
-    df["id"] = df["id"].astype(str)
-    df["conversation_id"] = df["conversation_id"].astype(str)
+    df.rename(columns={"remote_jid": "conversation_jid"}, inplace=True)
     df["created_at"] = pd.to_datetime(df["created_at"])
 
-    # ------- normalização JSON --------
+    # ---- JSON → colunas ----
+    def _safe(x):
+        if isinstance(x, dict):
+            return x
+        if isinstance(x, str) and x.strip():
+            try:
+                return json.loads(x)
+            except json.JSONDecodeError:
+                return {}
+        return {}
     for col in JSON_COLUMNS:
-        if col not in df.columns:
+        if col not in df:
             continue
+        flat = pd.json_normalize(df[col].apply(_safe), sep="_")
+        flat.columns = [f"{col.split('_')[0]}_{c}" for c in flat.columns]
+        df.drop(columns=[col], inplace=True)
+        df = pd.concat([df, flat], axis=1)
 
-        def _to_dict(x):
-            if isinstance(x, (dict, list)):
-                return x
-            if isinstance(x, str) and x.strip():
-                try:
-                    return json.loads(x)
-                except json.JSONDecodeError:
-                    return {}
-            return {}
+    # ---- valores financeiros ----
+    orig_col = find_col(df, ["valores_valor_total", "valores_valor_original_divida"])
+    fin_col  = find_col(df, ["valores_valor_final_acordado"])
 
-        parsed = df[col].apply(_to_dict)
-        if parsed.apply(bool).any():
-            flat = pd.json_normalize(parsed, sep="_")
-            # Adiciona um prefixo para evitar colisões de nome
-            flat.columns = [f"{col.split('_')[0]}_{c}" for c in flat.columns]
-            df = pd.concat([df.drop(columns=[col]), flat], axis=1)
+    for target, source in [("valor_original", orig_col), ("valor_final", fin_col)]:
+        serie = df[source] if source else pd.Series(np.nan, index=df.index)
+        df[target] = pd.to_numeric(serie, errors="coerce").fillna(0)
 
-    # --- INÍCIO DA CORREÇÃO: Consolidação de Colunas de Valor ---
-    # Busca por vários nomes possíveis para as colunas de valor
-    orig_col = find_col(df, ["valores_valor_total", "valores_valor_cobrado", "valores_valor_original", "valor_ressarcimento", "saldo_excedente_franquia"])
-    fin_col = find_col(df, ["valores_valor_final", "valores_valor_acordado"])
+    st_col = find_col(df, ["extracted_status"])
+    if st_col is not None:
+        fech = df[st_col].str.contains("Acordo Fechado", na=False)
+        df.loc[fech & (df["valor_final"] == 0), "valor_final"] = df["valor_original"]
 
-    # Cria colunas consolidadas e padronizadas
-    df["valor_original_consolidado"] = pd.to_numeric(df[orig_col], errors="coerce").fillna(0) if orig_col else 0
-    df["valor_final_consolidado"] = pd.to_numeric(df[fin_col], errors="coerce").fillna(0) if fin_col else df["valor_original_consolidado"]
-
-    # Calcula métricas de desconto usando as colunas consolidadas
-    df["discount_reais"] = df["valor_original_consolidado"] - df["valor_final_consolidado"]
-    df["discount_pct"] = np.where(df["valor_original_consolidado"] > 0, df["discount_reais"] / df["valor_original_consolidado"] * 100, 0)
-    # --- FIM DA CORREÇÃO ---
-    
+    df["desconto_reais"] = df["valor_original"] - df["valor_final"]
+    df["desconto_pct"]   = (df["desconto_reais"] / df["valor_original"] * 100
+                            ).replace([np.inf, -np.inf], 0).fillna(0)
     return df
 
+def compound_growth(series: pd.Series, freq="D") -> float:
+    if series.empty or series.iloc[0] == 0:
+        return np.nan
+    delta = (series.index[-1] - series.index[0]).days
+    if freq == "M":
+        delta /= 30.44
+    elif freq == "Y":
+        delta /= 365.25
+    return ((series.iloc[-1] / series.iloc[0]) ** (1 / max(delta, 1)) - 1) * 100
 
-# ------------------------------------------------------------------ #
-# FILTROS
-# ------------------------------------------------------------------ #
-def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
-    st.sidebar.title("⚙️ Filtros")
+# --------------------------------------------------------------------------
+# MODELAGEM
+# --------------------------------------------------------------------------
+def sm_ols_valor(df: pd.DataFrame, temp_col: str | None):
+    dfm = df[(df.valor_original > 0) & (df.valor_final > 0)].copy()
+    if dfm.empty:
+        return None
+    formula = "valor_final ~ valor_original"
+    if temp_col:
+        formula += f" + C({temp_col})"
+    return smf.ols(formula, data=dfm).fit()
 
-    min_d, max_d = df["created_at"].min().date(), df["created_at"].max().date()
-    start, end = st.sidebar.date_input("Período", (min_d, max_d), min_d, max_d)
-    mask = df["created_at"].between(pd.to_datetime(start), pd.to_datetime(end)+pd.Timedelta(days=1))
+def sm_logit_status(df: pd.DataFrame, st_col: str):
+    dfm = df[[st_col, "valor_original", "desconto_pct"]].dropna().copy()
+    dfm["y"] = dfm[st_col].eq("Acordo Fechado").astype(int)
+    if dfm["y"].nunique() < 2 or len(dfm) < 20:
+        return None
+    try:
+        return smf.logit("y ~ valor_original + desconto_pct", data=dfm).fit(disp=False)
+    except PerfectSeparationError:
+        return None
+
+# --------------------------------------------------------------------------
+# ABA 1 – KPIs
+# --------------------------------------------------------------------------
+def tab_performance_kpis(df: pd.DataFrame):
+    st.subheader("🚀 KPIs de Performance e Automação")
+
+    # ---------- métricas principais ----------
+    act_col   = find_col(df, ["director_acao_executada_type"])
+    alert_col = find_col(df, ["director_acao_executada_name"])
+    df["_ia_flag"] = df[act_col].notna().astype(int) if act_col else 0
+
+    total      = len(df)
+    acoes      = df["_ia_flag"].sum()
+    alertas    = df[alert_col].eq("AlertarSupervisor").sum() if alert_col else 0
+    atividades = acoes - alertas
+    taxa_auto  = 100 * acoes / total if total else 0
+
+    # ---------- cards ----------
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total de Análises", total)
+    c2.metric("Taxa de Ação da IA", f"{taxa_auto:.1f}%")
+    c3.metric("Atividades Criadas", atividades)
+    c4.metric("Alertas ao Supervisor", alertas)
+
+    st.divider()
+    st.subheader("Evolução de Volume × Automação")
+
+    # ---------- agregação corrigida ----------
+    ts = (
+        df.set_index("created_at")
+          .resample("D")
+          .agg(analises=("id", "count"),
+               ia_sum=("_ia_flag", "sum"))
+          .assign(taxa=lambda d: 100 * d.ia_sum / d.analises)
+          .reset_index()
+    )
+
+    # ---------- gráfico ----------
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=ts.created_at, y=ts.analises,
+                         name="Análises", marker_color="#1f77b4"),
+                  secondary_y=False)
+    fig.add_trace(go.Scatter(x=ts.created_at, y=ts.taxa,
+                             name="Taxa de IA (%)",
+                             mode="lines+markers", marker_color="#ff7f0e"),
+                  secondary_y=True)
+    fig.update_layout(template=PLOTLY_TEMPLATE,
+                      legend_orientation="h", legend_y=1.02)
+    fig.update_yaxes(title_text="Análises", secondary_y=False)
+    fig.update_yaxes(title_text="Taxa de IA (%)", secondary_y=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# --------------------------------------------------------------------------
+# ABA 2 – NEGOCIAÇÕES
+# --------------------------------------------------------------------------
+def tab_negotiation_analysis(df: pd.DataFrame):
+    st.subheader("📈 Análise de Negociações")
+
+    temp_col = find_col(df, ["temperature_temperatura_final"])
+    st_col   = find_col(df, ["extracted_status"])
+
+    col1, col2 = st.columns(2)
+    # Heat-map Temperatura × Status
+    if temp_col and st_col:
+        with col1:
+            heat = (df.groupby([temp_col, st_col]).size().unstack(fill_value=0))
+            heat.columns = [wrap_text(c, 30) for c in heat.columns]
+            fig = px.imshow(heat, text_auto=True, aspect="auto",
+                            labels={"x":"Status", "y":"Temperatura", "color":"Contagem"},
+                            title="Temperatura vs. Status", template=PLOTLY_TEMPLATE,
+                            color_continuous_scale="Blues")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Desconto % por Temperatura
+    if temp_col and "desconto_pct" in df:
+        with col2:
+            data = df[df.valor_original > 0]
+            fig = px.box(data, x=temp_col, y="desconto_pct",
+                         points="all", notched=True,
+                         labels={temp_col:"Temperatura", "desconto_pct":"Desconto (%)"},
+                         title="Desconto por Temperatura", template=PLOTLY_TEMPLATE,
+                         color=temp_col)
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    st.subheader("Resumo Financeiro")
+
+    fin = df[df.valor_original > 0]
+    if fin.empty:
+        st.info("Sem dados financeiros no período.")
+        return
+
+    total_orig = fin.valor_original.sum()
+    total_fin  = fin.valor_final.sum()
+    total_desc = fin.desconto_reais.sum()
+    taxa_recup = 100*total_fin/total_orig if total_orig else 0
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Valor Original",  fmt_moeda(total_orig))
+    with col2:
+        st.metric("Valor Acordado",  fmt_moeda(total_fin))
+    col3, col4 = st.columns(2)
+    with col3:
+        st.metric("Desconto Total",  fmt_moeda(total_desc))
+    with col4:
+        st.metric("Taxa de Recuperação", f"{taxa_recup:.1f}%")
+
+# --------------------------------------------------------------------------
+# ABA 3 – INSIGHTS DE CLIENTE
+# --------------------------------------------------------------------------
+def tab_customer_insights(df: pd.DataFrame):
+    st.subheader("💬 Insights dos Clientes")
+    pt_col = find_col(df, ["pontos_chave_cliente"])
+    if not pt_col:
+        st.info("Tabela sem a coluna de pontos-chave.")
+        return
+    pontos = (df[pt_col].dropna().explode().str.strip()
+              .replace("", np.nan).dropna())
+    if pontos.empty:
+        st.info("Nenhum ponto-chave disponível.")
+        return
+
+    top = pontos.value_counts().nlargest(15).reset_index()
+    top.columns = ["ponto", "freq"]
+    top["label"] = top["ponto"].apply(lambda x: wrap_text(x, 80))
+
+    fig = px.bar(top, y="label", x="freq", orientation="h", text="freq",
+                 labels={"label":"Ponto-chave", "freq":"Frequência"},
+                 template=PLOTLY_TEMPLATE,
+                 title="Top 15 Pontos-Chave citados por Clientes",
+                 hover_name="ponto")
+    fig.update_layout(yaxis={"categoryorder":"total ascending"})
+    fig.update_traces(textposition="outside")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# ABA 4 – ANÁLISES AVANÇADAS
+# --------------------------------------------------------------------------
+def tab_advanced_analytics(df: pd.DataFrame):
+    st.subheader("📊 Análises Avançadas")
+
+    temp_col = find_col(df, ["temperature_temperatura_final"])
+    st_col   = find_col(df, ["extracted_status"])
+
+    # ---------- Regressão OLS ----------
+    st.markdown("### Regressão OLS – Valor Final")
+    ols = sm_ols_valor(df, temp_col)
+    if ols:
+        st.write(ols.summary())
+    else:
+        st.info("Amostra insuficiente para OLS.")
+
+    # ---------- Logit ----------
+    st.markdown("### Logit – Probabilidade de Fechar")
+    if st_col:
+        logit = sm_logit_status(df, st_col)
+        if logit:
+            st.write(logit.summary())
+        else:
+            st.info("Logit não pôde ser ajustado (amostra ou separação perfeita).")
+    else:
+        st.info("Sem coluna de status para Logit.")
+
+    st.divider()
+    # ---------- Correlação ----------
+    st.markdown("#### Correlação de KPIs")
+    num = df[["valor_original", "valor_final", "desconto_pct"]].copy()
+    if num.dropna(axis=1, how="all").shape[1] >= 2:
+        corr = num.corr().round(2)
+        fig = px.imshow(corr, text_auto=True, color_continuous_scale="RdBu_r",
+                        template=PLOTLY_TEMPLATE)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    # ---------- Série Temporal ----------
+    st.markdown("#### Volume Diário + CAGR")
+    ts = df.set_index("created_at").resample("D")["id"].count()
+    if len(ts) >= 2:
+        cagrd = compound_growth(ts)
+        cagrm = compound_growth(ts.resample("M").sum(), "M")
+        c1, c2 = st.columns(2)
+        c1.metric("CAGR Diário",   f"{cagrd:.2f}%/dia" if not np.isnan(cagrd) else "N/A")
+        c2.metric("CAGR Mensal",   f"{cagrm:.2f}%/mês" if not np.isnan(cagrm) else "N/A")
+
+        if len(ts) >= 5:
+            lags = range(1, min(31, len(ts)))
+            acf = [ts.autocorr(l) for l in lags]  # noqa: E741
+            fig = go.Figure(go.Bar(x=list(lags), y=acf))
+            fig.update_layout(template=PLOTLY_TEMPLATE,
+                              title="Autocorrelação (até 30 lags)",
+                              xaxis_title="Lag (dias)", yaxis_title="ACF")
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Série temporal muito curta para CAGR/ACF.")
+
+
+# --------------------------------------------------------------------------
+# ABA 5 – TABELAS
+# --------------------------------------------------------------------------
+def tab_tables(df: pd.DataFrame):
+    st.subheader("📑 Tabela Detalhada")
+
+    # ❶ Colunas visíveis e títulos amigáveis
+    vis_map = {
+        "conversation_jid"            : "JID",
+        "created_at"                  : "Data",
+        "valor_original"              : "Valor Original",
+        "valor_final"                 : "Valor Acordado",
+        "desconto_reais"              : "Desconto (R$)",
+        "desconto_pct"                : "Desconto (%)",
+        "extracted_status"            : "Status",
+        "temperature_temperatura_final": "Temperatura",
+        "pontos_chave_cliente"        : "Pontos‑chave",
+    }
+
+    # ❷ Seleciona apenas o que existe no DataFrame
+    cols = [c for c in vis_map if c in df.columns]
+    data = df[cols].rename(columns=vis_map).copy()
+
+    # ❸ Formatação numérica
+    moeda_cols = ["Valor Original", "Valor Acordado", "Desconto (R$)"]
+    for c in moeda_cols:
+        if c in data:
+            data[c] = data[c].apply(fmt_moeda)
+
+    if "Desconto (%)" in data:
+        data["Desconto (%)"] = data["Desconto (%)"].round(1)
+
+    # ❹ Exibe com data_editor (editável = False)
+    st.data_editor(
+        data,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        disabled=True,               
+        column_config={
+            "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Desconto (%)": st.column_config.NumberColumn(format="%.1f %%"),
+        },
+    )
     
-    # Adapta a busca de colunas para usar a nova assinatura de find_col
-    for lbl, key in [("Status", ["extracted_status"]), ("Temperatura", ["temperature_temperatura_final"])]:
-        col = find_col(df, key)
+# --------------------------------------------------------------------------
+# APP
+# --------------------------------------------------------------------------
+def main():
+    st.title("🤖 Dashboard de Negociações | WhatsApp")
+    df_raw = read_whatsapp_data()
+    if df_raw.empty:
+        st.warning("Nenhum dado encontrado para o canal WhatsApp.")
+        return
+
+    # ----- Filtros -----
+    st.sidebar.header("⚙️ Filtros")
+    min_d, max_d = df_raw.created_at.min().date(), df_raw.created_at.max().date()
+    inicio, fim = st.sidebar.date_input("Período", (min_d, max_d),
+                                        min_value=min_d, max_value=max_d)
+    if inicio > fim:
+        st.sidebar.error("Data inicial > final")
+        return
+    df = df_raw[(df_raw.created_at.dt.date >= inicio) &
+                (df_raw.created_at.dt.date <= fim)].copy()
+
+    for lbl, keys in [("Status", ["extracted_status"]),
+                      ("Temperatura", ["temperature_temperatura_final"])]:
+        col = find_col(df, keys)
         if col:
             opts = sorted(df[col].dropna().unique())
-            sel = st.sidebar.multiselect(lbl, opts, default=opts)
-            if sel:
-                mask &= df[col].isin(sel)
+            sel  = st.sidebar.multiselect(f"Filtrar por {lbl}", opts, default=opts)
+            df   = df[df[col].isin(sel)]
 
-    return df[mask].copy()
-
-# ------------------------------------------------------------------ #
-# ABA: ANALYTICS
-# ------------------------------------------------------------------ #
-def tab_analytics(df: pd.DataFrame):
-    st.subheader("📈 Analytics Avançado")
-
-    # USA AS NOVAS COLUNAS CONSOLIDADAS
-    orig, fin = "valor_original_consolidado", "valor_final_consolidado"
-    
-    if df[orig].sum() == 0:
-        st.info("Colunas de valor não encontradas ou zeradas no período.")
-        return
     if df.empty:
-        st.info("Sem dados após filtros.")
+        st.info("Nenhum registro para os filtros selecionados.")
         return
 
-    # ---------------- BOX PLOT por quartil ----------------
-    st.markdown("##### Distribuição do % de desconto por quartis do valor original")
-    # Garante que há valores distintos para o qcut
-    if df[orig].nunique() >= 4:
-        df["orig_quartil"] = pd.qcut(df[orig][df[orig] > 0], 4, labels=["Q1 (baixo)", "Q2", "Q3", "Q4 (alto)"])
-        fig_box = px.box(
-            df.dropna(subset=['orig_quartil']), x="orig_quartil", y="discount_pct",
-            labels={"orig_quartil":"Quartil do Valor Original", "discount_pct":"% de Desconto"},
-            color="orig_quartil", title="% de desconto vs Quartil do ticket"
-        )
-        st.plotly_chart(fig_box, use_container_width=True)
-    else:
-        st.warning("Dados insuficientes para análise de quartis.")
-
-    # ---------------- REGRESSÃO discount_pct ~ valor_original ----------------
-    st.markdown("##### Regressão linear: % desconto ~ valor original")
-    X = df[[orig]].values
-    y = df["discount_pct"].values
-    if len(np.unique(X)) > 1 and LinearRegression:
-        model = LinearRegression().fit(X, y)
-        slope = model.coef_[0]
-        r2 = model.score(X, y)
-
-        fig_reg = px.scatter(
-            df, x=orig, y="discount_pct",
-            trendline="ols", trendline_color_override="red",
-            labels={orig:"Valor Original (R$)", "discount_pct":"% Desconto"},
-            title=f"Slope ≈ {slope:.4f} (p.p / R$) · R² = {r2:.2f}"
-        )
-        st.plotly_chart(fig_reg, use_container_width=True)
-    else:
-        st.warning("Dados insuficientes para regressão.")
-
-    # ---------------- K‑MEANS Cluster ----------------
-    st.markdown("##### Clusterização K‑means (k=3)")
-    temp_col = find_col(df, ["temperature_temperatura_final"])
-    if KMeans and temp_col:
-        temp_map = {"negativo":-1, "neutro":0, "positivo":1}
-        temp_num = df[temp_col].str.lower().map(temp_map).fillna(0)
-        cluster_df = df[[orig, fin]].copy()
-        cluster_df["temp_num"] = temp_num
-
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(cluster_df)
-        km = KMeans(n_clusters=3, n_init="auto", random_state=42).fit(scaled)
-        df["cluster"] = km.labels_.astype(str)
-
-        counts = df["cluster"].value_counts().sort_index()
-        c1, c2, c3 = st.columns(3)
-        for i, c in enumerate([c1, c2, c3]):
-            c.metric(f"Cluster {i}", counts.get(str(i), 0))
-
-        fig_clu = px.scatter(
-            df, x=orig, y=fin, color="cluster",
-            hover_name="conversation_id",
-            labels={orig:"Valor Original (R$)", fin:"Valor Acordado (R$)"},
-            title="Clusters em espaço de valores"
-        )
-        st.plotly_chart(fig_clu, use_container_width=True)
-    else:
-        st.info("scikit‑learn indisponível ou coluna 'temperatura' ausente – cluster não gerado.")
-
-    st.divider()
-
-    # ---------------- Outras análises rápidas ----------------
-    st.markdown("##### Outras relações")
-
-    # Regressão discount_reais ~ valor_original
-    if LinearRegression:
-        X2, y2 = df[[orig]].values, df["discount_reais"].values
-        if len(np.unique(X2)) > 1:
-            m2 = LinearRegression().fit(X2, y2)
-            st.caption(f"**discount_reais ~ valor_original** → slope ≈ {m2.coef_[0]:.2f} (R$ de desconto por R$ no ticket) · R² = {m2.score(X2, y2):.2f}")
-
-    # Box‑plot %desconto por temperatura
-    if temp_col:
-        st.plotly_chart(
-            px.box(
-                df, x=temp_col, y="discount_pct",
-                title="% de desconto por Temperatura",
-                labels={temp_col:"Temperatura", "discount_pct":"% Desconto"},
-                color=temp_col
-            ), use_container_width=True
-        )
-
-# ------------------------------------------------------------------ #
-# ABA: VISÃO GERAL
-# ------------------------------------------------------------------ #
-def tab_overview(df: pd.DataFrame):
-    st.subheader("📊 Visão Geral")
-
-    status_col = find_col(df, ["extracted_status"])
-    temp_col = find_col(df, ["temperature_temperatura_final"])
-
-    total = len(df)
-    success = (
-        df[status_col].str.contains(r"acordo fechado|sucesso|resolvido|concluída", case=False, na=False).sum()
-        if status_col else 0
-    )
-    rate = (success / total * 100) if total else 0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total de Análises", total)
-    c2.metric("Negociações com Sucesso", success)
-    c3.metric("Taxa de Sucesso", f"{rate:.1f}%")
-
-    st.divider()
-
-    # Distribuição de status
-    if status_col and not df[status_col].dropna().empty:
-        counts = df[status_col].value_counts()
-        fig = px.bar(
-            counts, x=counts.index, y=counts.values, text_auto=True,
-            title="Distribuição de Status", color_discrete_sequence=px.colors.sequential.Blues_r
-        )
-        fig.update_layout(xaxis_title=None, yaxis_title="Contagem", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Séries temporais
-    ts = df.set_index("created_at").resample("D").size()
-    fig_ts = px.area(
-        ts, x=ts.index, y=ts.values, markers=True,
-        title="Volume de Análises por Dia"
-    )
-    fig_ts.update_layout(xaxis_title="Data", yaxis_title="Qtd.")
-    st.plotly_chart(fig_ts, use_container_width=True)
-
-    # Heat‑map Temperatura × Status
-    if status_col and temp_col and not df[status_col].dropna().empty and not df[temp_col].dropna().empty:
-        pivot = df.groupby([temp_col, status_col]).size().unstack(fill_value=0)
-        fig_hm = px.imshow(
-            pivot, text_auto=True, aspect="auto",
-            color_continuous_scale="Viridis", title="Heat‑map: Temperatura × Status"
-        )
-        st.plotly_chart(fig_hm, use_container_width=True)
-
-# ------------------------------------------------------------------ #
-# ABA: FINANCEIRO
-# ------------------------------------------------------------------ #
-def tab_finance(df: pd.DataFrame):
-    st.subheader("💰 Indicadores Financeiros")
-
-    # USA AS NOVAS COLUNAS CONSOLIDADAS
-    orig_col, fin_col = "valor_original_consolidado", "valor_final_consolidado"
-
-    if df[orig_col].sum() == 0:
-        st.info("Colunas de valores não encontradas ou zeradas no período.")
-        return
-
-    df_val = df[df[orig_col] > 0]
-    if df_val.empty:
-        st.info("Não há registros financeiros no período.")
-        return
-
-    orig_total = df_val[orig_col].sum()
-    fin_total = df_val[fin_col].sum()
-    desc_total = orig_total - fin_total
-    rec_rate = (fin_total / orig_total * 100) if orig_total else 0
-    avg_ticket = df_val[orig_col].mean()
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Valor Original (Σ)", f"R$ {orig_total:,.2f}")
-    c2.metric("Valor Acordado (Σ)", f"R$ {fin_total:,.2f}")
-    c3.metric("Desconto (Σ)", f"R$ {desc_total:,.2f}")
-    c4.metric("Recuperação (%)", f"{rec_rate:.1f}%")
-    st.caption(f"Ticket médio: **R$ {avg_ticket:,.2f}**")
-
-    st.divider()
-    # Scatter
-    fig_scatter = px.scatter(
-        df_val, x=orig_col, y=fin_col,
-        color=find_col(df, ["temperature_temperatura_final"]),
-        hover_name="conversation_id",
-        labels={orig_col: "Original (R$)", fin_col: "Acordado (R$)"},
-        title="Valor Original × Valor Acordado"
-    )
-    max_axis = df_val[orig_col].max()
-    fig_scatter.add_shape(type="line", x0=0, y0=0, x1=max_axis, y1=max_axis,
-                          line=dict(color="gray", dash="dash"))
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-    # Histograma
-    st.plotly_chart(
-        px.histogram(
-            df_val, x="discount_pct", nbins=25,
-            labels={"discount_pct": "% de Desconto"},
-            title="Distribuição da % de Desconto"
-        ),
-        use_container_width=True,
-    )
-
-    # Box‑plot por status
-    status_col = find_col(df, ["extracted_status"])
-    if status_col and not df_val[status_col].dropna().empty:
-        st.plotly_chart(
-            px.box(
-                df_val, x=status_col, y="discount_pct",
-                labels={status_col: "Status", "discount_pct": "% de Desconto"},
-                title="Desconto (%) por Status"
-            ),
-            use_container_width=True,
-        )
-
-# ------------------------------------------------------------------ #
-# ABA: OPERACIONAL
-# ------------------------------------------------------------------ #
-def tab_ops(df: pd.DataFrame):
-    st.subheader("⚙️ Performance Operacional")
-
-    # Próximas ações
-    action_col = find_col(df, ["director_proxima_acao_sugerida"])
-    if action_col and not df[action_col].dropna().empty:
-        acao = df[action_col].value_counts()
-        st.plotly_chart(
-            px.bar(
-                acao, x=acao.index, y=acao.values, text_auto=True,
-                title="Próximas Ações Sugeridas",
-                color_discrete_sequence=px.colors.sequential.Purples_r,
-            ),
-            use_container_width=True,
-        )
-
-    # Tendência
-    tend_col = find_col(df, ["temperature_tendencia"])
-    if tend_col and not df[tend_col].dropna().empty:
-        tend = df[tend_col].value_counts()
-        st.plotly_chart(
-            px.pie(
-                tend, names=tend.index, values=tend.values, hole=0.45,
-                title="Tendência das Conversas",
-                color_discrete_sequence=px.colors.qualitative.Pastel,
-            ),
-            use_container_width=True,
-        )
-
-    # Correlação numérica
-    num = df.select_dtypes("number")
-    if len(num.columns) >= 2:
-        corr = num.corr(numeric_only=True)
-        st.plotly_chart(
-            px.imshow(
-                corr, text_auto=".2f", aspect="auto",
-                color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-                title="Correlação entre Métricas Numéricas",
-            ),
-            use_container_width=True,
-        )
-
-# ------------------------------------------------------------------ #
-# ABA: INSIGHTS DE CLIENTE
-# ------------------------------------------------------------------ #
-def tab_customer(df: pd.DataFrame):
-    st.subheader("💬 Pontos-chave do Cliente")
-
-    pontos_col = find_col(df, ["extracted_pontos_chave_cliente"])
-    if not pontos_col:
-        st.warning("Coluna de pontos-chave não localizada.")
-        return
-
-    # explode e limpa
-    pontos = (
-        df[pontos_col]
-        .dropna()
-        .explode()
-        .str.strip()
-        .replace("", pd.NA)
-        .dropna()
-    )
-
-    if pontos.empty:
-        st.info("Nenhum ponto-chave no período.")
-        return
-
-    # ---------------- KPIs ----------------
-    total_mensagens = len(pontos)
-    itens_unicos = pontos.nunique()
-    top_n = pontos.value_counts().head(15)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total de Pontos", f"{total_mensagens}")
-    c2.metric("Tópicos Únicos", f"{itens_unicos}")
-    if not top_n.empty:
-        c3.metric("Top 1", f"{top_n.index[0]} ({top_n.iloc[0]})")
-    
-    st.divider()
-
-    # ---------------- Gráfico ----------------
-    if not top_n.empty:
-        fig = px.bar(
-            top_n[::-1], # inverte p/ barra horizontal
-            x=top_n[::-1].values,
-            y=top_n[::-1].index,
-            orientation="h",
-            labels={"y": "Tópico", "x": "Frequência"},
-            title="Top 15 Pontos-chave mais citados",
-            text_auto=True,
-            color_discrete_sequence=px.colors.sequential.Blues_r,
-        )
-        fig.update_layout(yaxis=dict(dtick=1))
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ---------------- Tabela ----------------
-    st.markdown("#### Detalhe por conversa")
-    display_cols = ["conversation_id"]
-    for col_key in [
-        ["extracted_status"],
-        ["temperature_temperatura_final"],
-        ["valor_original_consolidado"],
-        ["valor_final_consolidado"],
-        [pontos_col]
-    ]:
-        found_col = find_col(df, col_key)
-        if found_col and found_col not in display_cols:
-            display_cols.append(found_col)
-
-    table = df[display_cols].copy()
-    if pontos_col in table.columns:
-        table[pontos_col] = table[pontos_col].apply(
-            lambda lst: ", ".join(lst) if isinstance(lst, list) else lst
-        )
-
-    st.dataframe(table, use_container_width=True)
-
-# ------------------------------------------------------------------ #
-# MAIN
-# ------------------------------------------------------------------ #
-def main():
-    st.title("🤖 Dashboard de Conversas – Vigia")
-    df_raw = read_data()
-    if df_raw.empty:
-        st.warning("Sem dados disponíveis no banco de dados.")
-        return
-        
-    df = apply_filters(df_raw)
-
-    tabs = st.tabs(["Visão Geral", "Financeiro 💲", "Operacional ⚙️", "Clientes 💬", "Analytics 📊"])
-    with tabs[0]:
-        tab_overview(df)
-    with tabs[1]:
-        tab_finance(df)
-    with tabs[2]:
-        tab_ops(df)
-    with tabs[3]:
-        tab_customer(df)
+    # ----- Abas -----
+    tabs = st.tabs([" KPIs de Performance ", " Análise de Negociações ",
+                " Insights do Cliente ", " Análises Avançadas ",
+                " Tabelas "])
+    with tabs[0]: 
+        tab_performance_kpis(df)
+    with tabs[1]: 
+        tab_negotiation_analysis(df)
+    with tabs[2]: 
+        tab_customer_insights(df)
+    with tabs[3]: 
+        tab_advanced_analytics(df)
     with tabs[4]:
-        tab_analytics(df)
-
+        tab_tables(df)
 
 if __name__ == "__main__":
     main()
