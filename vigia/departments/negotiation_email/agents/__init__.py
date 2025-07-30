@@ -13,6 +13,9 @@ from .extraction_specialist_agents import (
 from .extraction_manager_agent import EmailManagerAgent
 from .director_agent import EmailDirectorAgent
 
+# --- Judicial ---
+from .judicial_negotiation_advisor_agent import JudicialNegotiationAdvisorAgent
+
 # --- Instâncias dos Agentes de Contexto ---
 context_miner_agent = EmailDataMinerAgent()
 context_synthesizer_agent = ContextSynthesizerAgent()
@@ -29,6 +32,9 @@ temperature_behavioral_agent = EmailBehavioralAgent()
 # --- Instância do Agente Diretor ---
 director_agent = EmailDirectorAgent()
 
+# --- Instância do Agente Judicial ---
+judicial_negotiation_advisor_agent = JudicialNegotiationAdvisorAgent()
+
 __all__ = [
     "context_miner_agent",
     "context_synthesizer_agent",
@@ -38,4 +44,5 @@ __all__ = [
     "extraction_manager_agent",
     "temperature_behavioral_agent",
     "director_agent",
+    "judicial_negotiation_advisor_agent"
 ]

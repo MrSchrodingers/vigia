@@ -10,6 +10,7 @@ Dashboard de Análise de Negociações – WhatsApp v4.1-b
 # DEPENDÊNCIAS
 # --------------------------------------------------------------------------
 import os
+import uuid
 import json
 import textwrap
 import warnings
@@ -399,7 +400,101 @@ def tab_tables(df: pd.DataFrame):
             "Desconto (%)": st.column_config.NumberColumn(format="%.1f %%"),
         },
     )
-    
+
+# --------------------------------------------------------------------------
+# ABA 6 – ANÁLISE INDIVIDUAL
+# --------------------------------------------------------------------------
+def tab_individual_analysis(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> None:
+    st.subheader("🔎 Análise Individual")
+    st.markdown("Selecione uma análise e visualize os dados JSON registrados.")
+
+    if df_filtered.empty:
+        st.info("Nenhum dado disponível para os filtros selecionados.")
+        return
+
+    # 1) <selectbox>
+    df_view = df_filtered.copy()
+    df_view["id_str"] = df_view["id"].astype(str)
+    labels = (
+        df_view["created_at"].dt.strftime("%d/%m/%Y %H:%M")
+        + " | "
+        + df_view["conversation_jid"]
+    )
+    labels.index = df_view["id_str"]
+
+    sel = st.selectbox(
+        "Selecione uma análise:",
+        options=list(labels.index),
+        format_func=lambda k: labels.get(k, "ID não encontrado"),
+    )
+    if not sel:
+        return
+
+    # 2) Linha completa no df_raw
+    row = df_raw.loc[df_raw["id"].astype(str) == sel].iloc[0]
+    st.divider()
+
+    # 3) Helper seguro (corrigido)
+    def _raw_or_rebuild(prefix: str) -> dict | None:
+        raw_key = {
+            "extracted": "extracted_data",
+            "temperature": "temperature_assessment",
+            "director": "director_decision",
+        }[prefix]
+
+        # 3a) Campo bruto ainda existe?
+        if raw_key in row and isinstance(row[raw_key], str) and row[raw_key].strip():
+            try:
+                return json.loads(row[raw_key])
+            except json.JSONDecodeError:
+                return {"erro": "JSON inválido", "raw_data": row[raw_key]}
+
+        # 3b) Reconstrói de colunas prefixadas
+        subcols = {c: row[c] for c in row.index if c.startswith(f"{prefix}_")}
+        if not subcols:
+            return None
+
+        rebuilt = {}
+        for c, v in subcols.items():
+            # Aceita qualquer valor não-NaN. NaN numérico é descartado.
+            if np.isscalar(v) and pd.isna(v):
+                continue
+            rebuilt[c.split(f"{prefix}_", 1)[1]] = v
+        return rebuilt or None
+
+    # 4) Exibição
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("#### Dados Extraídos")
+        data_json = _raw_or_rebuild("extracted")
+        if data_json:
+            st.json(data_json, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+    with col2:
+        st.markdown("#### Análise de Temperatura")
+        temp_json = _raw_or_rebuild("temperature")
+        if temp_json:
+            st.json(temp_json, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+    with col3:
+        st.markdown("#### Decisão do Diretor")
+        dir_json = _raw_or_rebuild("director")
+        if dir_json:
+            st.json(dir_json, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+    # 5) UUID opcional
+    try:
+        _sel_uuid = uuid.UUID(sel)
+    except ValueError:
+        _sel_uuid = None
+                
 # --------------------------------------------------------------------------
 # APP
 # --------------------------------------------------------------------------
@@ -436,7 +531,7 @@ def main():
     # ----- Abas -----
     tabs = st.tabs([" KPIs de Performance ", " Análise de Negociações ",
                 " Insights do Cliente ", " Análises Avançadas ",
-                " Tabelas "])
+                " Tabelas ", " 🔎 Análise Individual "])
     with tabs[0]: 
         tab_performance_kpis(df)
     with tabs[1]: 
@@ -447,6 +542,8 @@ def main():
         tab_advanced_analytics(df)
     with tabs[4]:
         tab_tables(df)
+    with tabs[5]:
+        tab_individual_analysis(df_raw, df)
 
 if __name__ == "__main__":
     main()

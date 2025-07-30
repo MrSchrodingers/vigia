@@ -346,24 +346,38 @@ def tab_analises(df: pd.DataFrame):
                                    xaxis_title="Dias", yaxis_title="P(NÃO fechado)")
             st.plotly_chart(fig_surv, use_container_width=True)
 
-    # 8. Cramér V entre variáveis categóricas
-    with st.expander("📈 Associação entre variáveis categóricas (Cramér V)"):
+    # --- 8. Associação entre variáveis categóricas (Cramér V) --------------------
+    with st.expander("📈 Associação entre variáveis categóricas (Cramér V)"):
         cats = [c for c in [est_col, stat_col, tom_col] if c]
         if len(cats) >= 2:
-            def cramers_v(conf):
-                chi2 = stats.chi2_contingency(conf)[0]
+
+            def cramers_v(x, y) -> float:
+                """Cálculo robusto de Cramér V (retorna NaN se não houver dados)."""
+                conf = pd.crosstab(x, y)
+                # tabela vazia ou com 1 linha/coluna ⇒ não dá para calcular
+                if conf.empty or (conf.shape[0] < 2) or (conf.shape[1] < 2):
+                    return np.nan
+                try:
+                    chi2 = stats.chi2_contingency(conf, correction=False)[0]
+                except ValueError:          # “observed has size 0”
+                    return np.nan
                 n = conf.values.sum()
-                phi2 = chi2 / n
                 r, k = conf.shape
-                return np.sqrt(phi2 / min(k - 1, r - 1))
-            mat = np.zeros((len(cats), len(cats)))
+                return np.sqrt((chi2 / n) / (min(k - 1, r - 1)))
+
+            mat = np.full((len(cats), len(cats)), np.nan)
             for i, j in itertools.combinations(range(len(cats)), 2):
-                mat[i, j] = mat[j, i] = cramers_v(pd.crosstab(df[cats[i]], df[cats[j]]))
-            fig_cr = px.imshow(mat, x=cats, y=cats, text_auto=".2f",
-                               color_continuous_scale="Blues",
-                               template=PLOTLY_TEMPLATE,
-                               title="Cramér V – associação categórica")
-            st.plotly_chart(fig_cr, use_container_width=True)
+                mat[i, j] = mat[j, i] = cramers_v(df[cats[i]], df[cats[j]])
+
+            if np.isfinite(mat).any():
+                fig_cr = px.imshow(
+                    mat, x=cats, y=cats, text_auto=".2f",
+                    color_continuous_scale="Blues", template=PLOTLY_TEMPLATE,
+                    title="Cramér V – associação categórica"
+                )
+                st.plotly_chart(fig_cr, use_container_width=True)
+            else:
+                st.info("Não há pares de categorias suficientes para calcular Cramér V.")
 
     # 9. Rede de participantes
     if nx and "participants" in df.columns:
@@ -446,6 +460,127 @@ def tab_tabelas(df: pd.DataFrame):
                      use_container_width=True)
 
 # --------------------------------------------------------------------------
+# ABA 6 – ANÁLISE INDIVIDUAL (E-mail)
+# --------------------------------------------------------------------------
+def get_id_col(df: pd.DataFrame) -> str:
+    for cand in ("analysis_id", "id"):
+        if cand in df.columns:
+            return cand
+    raise KeyError("Nenhuma coluna de ID encontrada (analysis_id / id).")
+
+def tab_email_individual(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> None:
+    """
+    🔎 Exibe uma thread de e-mail específica com seus blobs JSON
+    (extracted_data, temperature_assessment, director_decision).
+
+    • Funciona com qualquer formato de ID (UUID, int…).
+    • Gera rótulos de seleção a partir da data + assunto do e-mail.
+    • Reconstrói JSONs se eles tiverem sido achatados pelo normalize.
+    """
+    st.subheader("📧 Análise Individual – E-mail")
+    st.markdown("Selecione uma thread para inspecionar os dados extraídos.")
+
+    if df_filtered.empty:
+        st.info("Nenhum dado disponível para os filtros atuais.")
+        return
+
+    # ──────────────────────────────────────────────────────────────
+    # 1) <selectbox> – sempre strings
+    # ──────────────────────────────────────────────────────────────
+    id_col = get_id_col(df_filtered)
+    df_view = df_filtered.copy()
+    df_view["id_str"] = df_view[id_col].astype(str)
+
+    # tenta extrair um “assunto” (nº do processo) do JSON flat
+    subj_col = find_col(df_view, ["extracted_assunto_numero_processo", "extracted_assunto"])
+    df_view["assunto"] = (
+        df_view[subj_col]
+        .fillna("Assunto indisponível")
+        .astype(str)
+        .str.slice(0, 60)          # evita rótulos gigantes
+    )
+
+    labels = (
+        df_view["created_at"].dt.strftime("%d/%m/%Y %H:%M")
+        + " | "
+        + df_view["assunto"]
+    )
+    labels.index = df_view["id_str"]
+
+    sel = st.selectbox(
+        "Selecione uma thread:",
+        options=df_view["id_str"],
+        format_func=lambda k: labels.get(k, "ID não encontrado"),
+    )
+    if not sel:
+        return
+
+    # ──────────────────────────────────────────────────────────────
+    # 2) Linha completa
+    # ──────────────────────────────────────────────────────────────
+    row = df_raw.loc[df_raw[id_col].astype(str) == sel].iloc[0]
+    st.divider()
+
+    # ──────────────────────────────────────────────────────────────
+    # 3) Helper JSON (aceita flatten)
+    # ──────────────────────────────────────────────────────────────
+    def _json_email(prefix: str) -> dict | None:
+        raw_key = {
+            "extracted": "extracted_data",
+            "temperature": "temperature_assessment",
+            "director": "director_decision",
+        }[prefix]
+
+        # 3a) blob bruto existe?
+        if raw_key in row and isinstance(row[raw_key], str) and row[raw_key].strip():
+            try:
+                return json.loads(row[raw_key])
+            except json.JSONDecodeError:
+                return {"erro": "JSON inválido", "raw_data": row[raw_key]}
+
+        # 3b) reconstruir do flatten
+        subcols = {c: row[c] for c in row.index if c.startswith(f"{prefix}_")}
+        if not subcols:
+            return None
+
+        rebuilt = {
+            c.split(f"{prefix}_", 1)[1]: v
+            for c, v in subcols.items()
+            if not (np.isscalar(v) and pd.isna(v))
+        }
+        return rebuilt or None
+
+    # ──────────────────────────────────────────────────────────────
+    # 4) Exibição lado a lado
+    # ──────────────────────────────────────────────────────────────
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("#### Conteúdo Extraído")
+        j = _json_email("extracted")
+        if j:
+            st.json(j, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+    with col2:
+        st.markdown("#### Avaliação de Temperatura")
+        j = _json_email("temperature")
+        if j:
+            st.json(j, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+    with col3:
+        st.markdown("#### Ação do Diretor")
+        j = _json_email("director")
+        if j:
+            st.json(j, expanded=True)
+        else:
+            st.write("Nenhum dado.")
+
+
+# --------------------------------------------------------------------------
 # APLICAÇÃO PRINCIPAL
 # --------------------------------------------------------------------------
 def main():
@@ -478,13 +613,15 @@ def main():
         return
 
     # -------- abas --------
-    abas = st.tabs(["📊 Resumos", "🔍 Análises", "📑 Tabelas"])
+    abas = st.tabs(["📊 Resumos", "🔍 Análises", "📑 Tabelas", " 🔎 E-mail Individual "])
     with abas[0]: 
         tab_resumos(df)
     with abas[1]: 
         tab_analises(df)
     with abas[2]: 
         tab_tabelas(df)
+    with abas[3]:
+        tab_email_individual(df_raw, df) 
 
 if __name__ == "__main__":
     main()
