@@ -4,6 +4,7 @@ import tempfile
 import os
 import logging
 from vigia.config import settings
+import math 
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 
@@ -12,7 +13,7 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 # ──────────────────────────────────────────────────────────────
 try:
     whisper_model = whisper.load_model(
-        "medium",
+        "base",
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
 except Exception as e:
@@ -21,6 +22,17 @@ except Exception as e:
 
 
 # ──────────────────────────────────────────────────────────────
+def _confidence_from_segments(segments):
+    """
+    Calcula uma confiança ∈ [0,1] a partir do avg_logprob médio dos segmentos.
+    Whisper devolve valores negativos (≈0→muito confiável, ≈‑5→ruim).
+    """
+    if not segments:
+        return 0.0
+    avg_lp = sum(s["avg_logprob"] for s in segments) / len(segments)
+    # converte log‑prob média em prob. grosseira e corta nos extremos
+    return max(0.0, min(math.exp(avg_lp), 1.0))
+
 def transcribe_audio_with_whisper(audio_data: bytes) -> str | None:
     """Transcreve bytes (.ogg, .mp3…) usando Whisper‑medium."""
     if whisper_model is None:
@@ -39,7 +51,9 @@ def transcribe_audio_with_whisper(audio_data: bytes) -> str | None:
             word_timestamps=False,
             fp16=torch.cuda.is_available()
         )
-        return result["text"].strip()
+        conf     = _confidence_from_segments(result.get("segments", []))
+        conf_tag = f"CONFIDÊNCIA={conf:.2f}"
+        return f"[ÁUDIO {conf_tag}]: {result['text'].strip()}"
 
     except Exception as e:
         logging.error("Erro na transcrição Whisper: %s", e)

@@ -4,6 +4,7 @@ import json
 import asyncio
 from typing import Tuple, Dict, Any, Optional
 from sqlalchemy.orm import Session
+import re
 
 from db.session import SessionLocal
 from db import models
@@ -16,8 +17,42 @@ from ..agents.sentiment_agents import lexical_sentiment_agent, behavioral_sentim
 from ..agents.guard_agent import guard_agent
 from ..agents.director_agent import director_agent
 from ..agents import context_agent, specialist_agents
+from ..agents.audio_agent import audio_tot_agent
 
 logger = logging.getLogger(__name__)
+
+AUDIO_RE = re.compile(r":\s*\[ÁUDIO", re.I)
+
+async def _preprocess_audio_segments(raw_history: str, reference_date: str) -> str:
+    processed_lines = []
+
+    for line in raw_history.splitlines():
+        if AUDIO_RE.search(line):
+            # ── separa remetente do payload ──────────────────────────────
+            sender, _, payload = line.partition(":")        # "Cliente", "[ÁUDIO…"
+            payload = payload.strip()
+
+            # ── chama o agente TOT só com o payload ─────────────────────
+            raw_result = await audio_tot_agent.execute(payload, reference_date)
+            cleaned = llm_service._clean_llm_response(raw_result)
+
+            try:
+                info = json.loads(cleaned)
+            except json.JSONDecodeError:
+                logging.error(f"AudioTOTAgent JSON inválido: {cleaned}")
+                processed_lines.append(line)
+                continue
+
+            tag = " (BAIXA CONFIANÇA)" if info.get("possui_baixa_confianca") else ""
+            transcricao = info.get("transcricao_limpa", "")
+
+            processed_lines.append(
+                f"{sender}: [TRANSCRIÇÃO ÁUDIO{tag}]: {transcricao}"
+            )
+        else:
+            processed_lines.append(line)
+
+    return "\n".join(processed_lines)
 
 async def _run_guarded_specialist(
     specialist_agent, 
@@ -161,8 +196,11 @@ async def run_department_pipeline(payload: dict) -> Optional[Dict[str, Any]]:
     reference_date_str = last_message_date.strftime("%Y-%m-%d") if last_message_date else datetime.now().strftime("%Y-%m-%d")
     
     # FASE 1: Contextualização
+    history_text = await _preprocess_audio_segments(history_text, reference_date_str)
     enriched_context = await run_context_department(conversation_jid)
-    history_with_context = f"{enriched_context}\n\n---\n\nHISTÓRICO DA CONVERSA ORIGINAL:\n{history_text}"
+    history_with_context = (
+        f"{enriched_context}\n\n---\n\nHISTÓRICO DA CONVERSA ORIGINAL:\n{history_text}"
+    )
 
     # FASE 2: Execução Paralela
     department_reports = await asyncio.gather(
@@ -185,8 +223,8 @@ async def run_department_pipeline(payload: dict) -> Optional[Dict[str, Any]]:
             director_output = json.loads(director_output_str)
 
         if isinstance(director_output, dict) and director_output.get("type") == "function_call":
-            tool_result = await execute_tool_call(director_output)
-            director_decision = {"acao_executada": director_output, "resultado_execucao": tool_result}
+            # tool_result = await execute_tool_call(director_output)
+            director_decision = {"acao_executada": director_output, "resultado_execucao": 'tool_result'}
         else:
             director_decision = {"decisao_estrategica": director_output}
     except (json.JSONDecodeError, TypeError) as e:

@@ -1,6 +1,10 @@
 import logging
 from sqlalchemy.orm import Session
 from datetime import datetime
+import uuid
+from typing import List, Dict
+
+from sqlalchemy.dialects.postgresql import insert
 
 from db import models
 
@@ -38,49 +42,108 @@ def save_analysis_results(
 
     db.commit()
     
-def save_raw_conversation(db: Session, conversation_jid: str, messages: list[dict]):
+def save_raw_conversation(
+    db: Session,
+    conversation_jid: str,
+    messages: List[Dict[str, str | int]],
+) -> int:
     """
-    Salva de forma idempotente as mensagens brutas de uma conversa de WhatsApp.
-    Usado pelo importador histórico do WhatsApp.
+    Persiste, de forma idempotente e em lote, as mensagens brutas de uma
+    conversa de WhatsApp vindas da Evolution API.
+
+    • Garante que `external_id` seja único no banco (cross‑conversation),
+      usando `INSERT … ON CONFLICT DO NOTHING`.
+    • Faz _upsert_ da Conversation para evitar SELECT extra.
+    • Ignora mensagens sem `external_id` ou sem `timestamp`.
+    • Retorna o nº de novas mensagens efetivamente inseridas.
+
+    Parameters
+    ----------
+    db : Session
+        Sessão SQLAlchemy aberta.
+    conversation_jid : str
+        Identificador do chat remoto (ex.: "551199999999@s.whatsapp.net").
+    messages : list[dict]
+        Payload no formato:
+        {
+            "external_id": str,
+            "sender":      str,       # "Negociador" ou "Cliente"
+            "text":        str,
+            "timestamp":   int        # epoch segundos
+        }
+
+    Returns
+    -------
+    int
+        Quantidade de mensagens novas adicionadas.
     """
-    # Encontra ou cria a conversa
-    conversation = db.query(models.Conversation).filter_by(remote_jid=conversation_jid).first()
+    # ─────────────────────────────────────────────────────────────── conversation
+    conversation = (
+        db.query(models.Conversation)
+        .filter_by(remote_jid=conversation_jid)
+        .first()
+    )
     if not conversation:
         conversation = models.Conversation(remote_jid=conversation_jid)
         db.add(conversation)
-        # O flush é importante para obter o conversation.id antes do commit final
-        db.flush()
+        db.flush()  # garante conversation.id
 
-    incoming_external_ids = {msg['external_id'] for msg in messages if msg.get('external_id')}
-    
-    if not incoming_external_ids:
-        return # Nenhuma mensagem com ID para processar
+    # ─────────────────────────────────────────────────────────────── limpeza L1
+    # ignora mensagens sem ID ou sem timestamp
+    cleaned = [
+        m
+        for m in messages
+        if m.get("external_id") and m.get("timestamp") is not None
+    ]
+    if not cleaned:
+        return 0
 
-    # Busca no banco quais desses IDs já existem para esta conversa
-    existing_ids = {
-        res[0] for res in db.query(models.Message.external_id)
-        .filter(models.Message.conversation_id == conversation.id)
-        .filter(models.Message.external_id.in_(incoming_external_ids))
-        .all()
-    }
-    
-    # Adiciona apenas as mensagens que ainda não existem
-    new_messages_added = False
-    for msg_data in messages:
-        external_id = msg_data.get('external_id')
-        if external_id and external_id not in existing_ids:
-            message = models.Message(
-                external_id=external_id,
+    # dedup in‑memory no lote atual
+    seen_batch: set[str] = set()
+    rows: list[dict] = []
+    for m in cleaned:
+        ext_id = m["external_id"]
+        if ext_id in seen_batch:
+            continue
+        seen_batch.add(ext_id)
+
+        rows.append(
+            dict(
+                id=str(uuid.uuid4()),
+                external_id=ext_id,
                 conversation_id=conversation.id,
-                sender=msg_data['sender'],
-                text=msg_data['text'],
-                message_timestamp=datetime.fromtimestamp(msg_data['timestamp'])
+                sender=m["sender"],
+                text=m["text"],
+                message_timestamp=datetime.fromtimestamp(int(m["timestamp"])),
             )
-            db.add(message)
-            new_messages_added = True
-    
-    if new_messages_added:
+        )
+    if not rows:
+        return 0
+
+    # ────────────────────────────────────────────────────── bulk insert / upsert
+    stmt = (
+        insert(models.Message)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=["external_id"])
+    )
+
+    try:
+        result = db.execute(stmt)
         db.commit()
+        inserted = result.rowcount or 0
+        logger.debug(
+            "save_raw_conversation • %s novas mensagens inseridas para %s",
+            inserted,
+            conversation_jid,
+        )
+        return inserted
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Erro ao salvar mensagens da conversa %s • rollback efetuado",
+            conversation_jid,
+        )
+        return 0
 
 def save_whatsapp_analysis_results(
     db: Session,
