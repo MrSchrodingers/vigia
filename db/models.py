@@ -92,6 +92,12 @@ class Analysis(Base):
     extracted_data = Column(JSON, nullable=True)
     temperature_assessment = Column(JSON, nullable=True)
     director_decision = Column(JSON, nullable=True)
+    
+    kpis = Column(JSON, nullable=True)
+    advisor_recommendation = Column(JSON, nullable=True)
+    context = Column(JSON, nullable=True)
+    formal_summary = Column(JSON, nullable=True)
+    
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now(), default=func.now())
 

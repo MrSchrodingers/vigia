@@ -184,7 +184,7 @@ def save_whatsapp_analysis_results(
 def save_email_analysis_results(db: Session, analysis_data: dict):
     """
     Salva ou atualiza os resultados da análise de IA para uma thread de e-mail.
-    Usa o modelo de análise polimórfico.
+    Usa o modelo de análise polimórfico e inclui todos os novos campos.
     """
     conversation_id = analysis_data.get("analysis_metadata", {}).get("conversation_id")
     if not conversation_id:
@@ -209,12 +209,16 @@ def save_email_analysis_results(db: Session, analysis_data: dict):
         )
         db.add(analysis)
 
-    # Atualiza os dados da análise
     analysis.extracted_data = analysis_data.get("extracted_data")
     analysis.temperature_assessment = analysis_data.get("temperature_analysis")
     analysis.director_decision = analysis_data.get("director_decision")
     
-    logger.info(f"Análise atualizada para a thread de e-mail {conversation_id}.")
+    analysis.kpis = analysis_data.get("kpis")
+    analysis.advisor_recommendation = analysis_data.get("advisor_recommendation")
+    analysis.context = analysis_data.get("context")
+    analysis.formal_summary = analysis_data.get("formal_summary")
+    
+    logger.info(f"Análise completa (com sumário, KPIs, etc.) foi salva para a thread {conversation_id}.")
     db.commit()
 
 # --- Funções de Consulta Genéricas ---

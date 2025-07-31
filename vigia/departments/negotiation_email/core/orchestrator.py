@@ -4,11 +4,12 @@ import json
 import re
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional, Union
+from vigia.services import database_service, pipedrive_service
+from vigia.services.pipedrive_service import email_client
 
 from sqlalchemy.orm import Session
 from db.session import SessionLocal
 from db import models
-from vigia.services import database_service
 
 # ==== Agents ================================================================
 from ..agents import (
@@ -21,6 +22,7 @@ from ..agents import (
     temperature_behavioral_agent,
     director_agent,
     judicial_negotiation_advisor_agent,
+    formal_summarizer_agent
 )
 # from .tools import execute_email_tool_call  # TODO: habilitar quando pronto
 
@@ -30,7 +32,74 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Utilitários internos
 # ---------------------------------------------------------------------------
+def _format_summary_for_note(summary_data: Dict[str, Any]) -> str:
+    """Formata o JSON do sumário em um texto HTML rico e legível para a nota do Pipedrive."""
+    if not summary_data or "erro" in summary_data:
+        return "<i>Erro ao gerar o sumário da análise.</i>"
 
+    style = 'style="padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #eee;"'
+    
+    html_parts = [f'<div {style}><h2>📝 Resumo da Análise da Negociação</h2></div>']
+
+    # --- Seção: Resumo Executivo ---
+    if summary_data.get("sumario_executivo"):
+        html_parts.append(
+            f"<div {style}>"
+            f'<h4>Resumo Executivo</h4>'
+            f'<p>{summary_data["sumario_executivo"]}</p>'
+            f"</div>"
+        )
+    
+    # --- Seção: Status ---
+    status_info = summary_data.get("status_e_proximos_passos", {})
+    if status_info.get("status_atual"):
+         html_parts.append(
+            f"<div {style}>"
+            f'<h4>Status Atual</h4>'
+            f'<p><strong>{status_info["status_atual"]}</strong></p>'
+            f"</div>"
+        )
+
+    # --- Seção: Histórico da Negociação ---
+    historico = summary_data.get("historico_negociacao", {})
+    if historico:
+        # Começa a seção de histórico
+        hist_parts = [f'<div {style}><h4>Histórico da Negociação</h4>']
+        
+        # Adiciona o fluxo geral da negociação
+        if historico.get("fluxo"):
+            hist_parts.append(f'<p>{historico["fluxo"]}</p>')
+        
+        # Argumentos do Cliente
+        cliente_args = historico.get("argumentos_cliente")
+        if cliente_args:
+            hist_parts.append('<strong>Argumentos do Cliente:</strong>')
+            # Trata tanto se for uma lista quanto um texto simples
+            if isinstance(cliente_args, list):
+                hist_parts.append('<ul>')
+                for arg in cliente_args:
+                    hist_parts.append(f'<li>{arg}</li>')
+                hist_parts.append('</ul>')
+            else:
+                hist_parts.append(f'<p><i>{cliente_args}</i></p>')
+
+        # Argumentos Internos
+        internos_args = historico.get("argumentos_internos")
+        if internos_args:
+            hist_parts.append('<br><strong>Nossos Argumentos:</strong>')
+            if isinstance(internos_args, list):
+                hist_parts.append('<ul>')
+                for arg in internos_args:
+                    hist_parts.append(f'<li>{arg}</li>')
+                hist_parts.append('</ul>')
+            else:
+                hist_parts.append(f'<p><i>{internos_args}</i></p>')
+        
+        # Fecha a seção de histórico
+        hist_parts.append('</div>')
+        html_parts.append("".join(hist_parts))
+
+    return "".join(html_parts)
 
 def _safe_json_loads(text: Union[str, bytes]) -> Dict[str, Any]:
     """Tenta converter *qualquer* string para dict JSON.
@@ -188,8 +257,46 @@ async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
         advisor_json = _safe_json_loads(advisor_raw)
     except json.JSONDecodeError:
         advisor_json = {"erro": "advisor output inválido", "raw": advisor_raw}
+    
+    # 6) Summarizator ===================================================
+    logger.info("-- Gerando sumário formal")
+    
+    # Criamos um payload específico para o sumarizador, garantindo que ele receba os dados estruturados.
+    summarizer_payload = {
+        "dados_extraidos": extract_data,
+        "analise_temperatura": temp_data,
+        "contexto_crm": raw_crm
+    }
+    
+    summary_raw = await formal_summarizer_agent.execute(summarizer_payload)
+    try:
+        summary_json = _safe_json_loads(summary_raw)
+    except json.JSONDecodeError as e:
+        logger.error("Erro ao decodificar o JSON do sumário: %s", e)
+        summary_json = {"erro": "summarizer output inválido", "raw": summary_raw}
+        
+    pipedrive_actions_results = []
+    deal_id = raw_crm.get("deal", {}).get("id")
 
-    # 6) Relatório final ====================================================
+    if deal_id and "erro" not in summary_json:
+        logger.info(f"Deal ID {deal_id} encontrado. Preparando para criar nota no Pipedrive.")
+        
+        note_content = _format_summary_for_note(summary_json)
+        
+        note_result = await pipedrive_service.create_note_for_deal(
+            client=email_client,
+            deal_id=deal_id,
+            content=note_content
+        )
+        
+        if note_result and "id" in note_result:
+            logger.info(f"Nota criada com sucesso no Pipedrive (ID da Nota: {note_result['id']}).")
+            pipedrive_actions_results.append({"action": "create_note", "status": "success", "result": note_result})
+        else:
+            logger.error("Falha ao criar nota no Pipedrive.")
+            pipedrive_actions_results.append({"action": "create_note", "status": "failure", "result": note_result})
+
+    # 7) Relatório final ====================================================
     report = {
         "analysis_metadata": {"conversation_id": conv_id},
         "extracted_data": extract_data,
@@ -198,6 +305,8 @@ async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
         "director_decision": director_json,
         "advisor_recommendation": advisor_json,
         "context": {"crm_context": enriched_ctx},
+        "formal_summary": summary_json,
+        "pipedrive_actions": pipedrive_actions_results
     }
 
     if save_result:

@@ -16,6 +16,9 @@ from .director_agent import EmailDirectorAgent
 # --- Judicial ---
 from .judicial_negotiation_advisor_agent import JudicialNegotiationAdvisorAgent
 
+# --- Sumarizador ---
+from .formal_summarizer_agent import FormalSummarizerAgent
+
 # --- Instâncias dos Agentes de Contexto ---
 context_miner_agent = EmailDataMinerAgent()
 context_synthesizer_agent = ContextSynthesizerAgent()
@@ -35,6 +38,9 @@ director_agent = EmailDirectorAgent()
 # --- Instância do Agente Judicial ---
 judicial_negotiation_advisor_agent = JudicialNegotiationAdvisorAgent()
 
+# --- Instância do Agente Sumarizador ---
+formal_summarizer_agent = FormalSummarizerAgent()
+
 __all__ = [
     "context_miner_agent",
     "context_synthesizer_agent",
@@ -44,5 +50,6 @@ __all__ = [
     "extraction_manager_agent",
     "temperature_behavioral_agent",
     "director_agent",
-    "judicial_negotiation_advisor_agent"
+    "judicial_negotiation_advisor_agent",
+    "formal_summarizer_agent"
 ]

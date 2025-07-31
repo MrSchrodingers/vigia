@@ -52,7 +52,15 @@ DB_URI = (
     f"postgresql+psycopg2://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
     f"@{os.getenv('DB_HOST', 'postgres')}:5432/{os.getenv('POSTGRES_DB')}"
 )
-JSON_COLUMNS = ["extracted_data", "temperature_assessment", "director_decision"]
+JSON_COLUMNS = [
+    "extracted_data", 
+    "temperature_assessment", 
+    "director_decision",
+    "kpis",
+    "advisor_recommendation",
+    "context",
+    "formal_summary"
+]
 
 # --------------------------------------------------------------------------
 # UTILITÁRIOS
@@ -81,7 +89,11 @@ def read_email_data() -> pd.DataFrame:
              a.created_at,
              a.extracted_data,
              a.temperature_assessment,
-             a.director_decision
+             a.director_decision,
+             a.kpis,
+             a.advisor_recommendation,
+             a.context,
+             a.formal_summary
         FROM analyses a
         JOIN email_threads et ON CAST(a.analysable_id AS UUID) = et.id
        WHERE a.analysable_type = 'email_thread';
@@ -116,8 +128,18 @@ def read_email_data() -> pd.DataFrame:
             continue
         nested = df_proc[col].apply(_safe).tolist()
         flat = pd.json_normalize(nested, sep="_").set_index(df_proc.index)
-        flat.columns = [f"{col.split('_')[0]}_{c}" for c in flat.columns]
-        df_proc = pd.concat([df_proc, flat], axis=1)
+        prefix_map = {
+            "extracted_data": "extracted",
+            "temperature_assessment": "temperature",
+            "director_decision": "director",
+            "context": "pipedrive",
+            "advisor_recommendation": "advisor",
+            "formal_summary": "summary"
+        }
+        prefix = prefix_map.get(col, col.split('_')[0])
+        flat.columns = [f"{prefix}_{c}" for c in flat.columns]
+        
+        df_proc = df_proc.join(flat)
 
     df_proc.drop(columns=JSON_COLUMNS, inplace=True, errors="ignore")
 
@@ -529,6 +551,11 @@ def tab_email_individual(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> Non
             "extracted": "extracted_data",
             "temperature": "temperature_assessment",
             "director": "director_decision",
+            "kpis": "kpis",
+            "advisor": "advisor_recommendation",
+            "pipedrive": "context",
+            "summary": "formal_summary",
+            
         }[prefix]
 
         # 3a) blob bruto existe?
@@ -551,31 +578,70 @@ def tab_email_individual(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> Non
         return rebuilt or None
 
     # ──────────────────────────────────────────────────────────────
-    # 4) Exibição lado a lado
+    # 4) Exibição em duas linhas
     # ──────────────────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
 
-    with col1:
+    # --- Primeira Linha ---
+    row1_col1, row1_col2, row1_col3 = st.columns(3)
+
+    with row1_col1:
         st.markdown("#### Conteúdo Extraído")
         j = _json_email("extracted")
         if j:
-            st.json(j, expanded=True)
+            st.json(j, expanded=False)
         else:
             st.write("Nenhum dado.")
 
-    with col2:
+    with row1_col2:
         st.markdown("#### Avaliação de Temperatura")
         j = _json_email("temperature")
         if j:
-            st.json(j, expanded=True)
+            st.json(j, expanded=False)
         else:
             st.write("Nenhum dado.")
 
-    with col3:
+    with row1_col3:
         st.markdown("#### Ação do Diretor")
         j = _json_email("director")
         if j:
-            st.json(j, expanded=True)
+            st.json(j, expanded=False)
+        else:
+            st.write("Nenhum dado.")
+
+    st.divider()
+
+    # --- Segunda Linha ---
+    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+            
+    with row2_col1:
+        st.markdown("#### KPIs")
+        j = _json_email("kpis")
+        if j:
+            st.json(j, expanded=False)
+        else:
+            st.write("Nenhum dado.")
+            
+    with row2_col2:
+        st.markdown("#### Recomendações")
+        j = _json_email("advisor")
+        if j:
+            st.json(j, expanded=False)
+        else:
+            st.write("Nenhum dado.")
+            
+    with row2_col3:
+        st.markdown("#### Contexto Pipedrive")
+        j = _json_email("pipedrive")
+        if j:
+            st.json(j, expanded=False)
+        else:
+            st.write("Nenhum dado.")
+            
+    with row2_col4:
+        st.markdown("#### Sumarização")
+        j = _json_email("summary")
+        if j:
+            st.json(j, expanded=False)
         else:
             st.write("Nenhum dado.")
 

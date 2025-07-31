@@ -393,3 +393,32 @@ async def create_activity(
         payload["deal_id"] = deal_id
 
     return await client._request("POST", "/activities", json=payload)
+
+async def create_note_for_deal(
+    client: PipedriveClient, 
+    deal_id: int, 
+    content: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Cria uma nova Nota e a associa a um Deal específico.
+
+    Args:
+        client: A instância do PipedriveClient a ser usada.
+        deal_id: O ID do Deal ao qual a nota será anexada.
+        content: O conteúdo da nota (em texto ou HTML).
+    
+    Returns:
+        O dicionário de dados da nota criada ou None em caso de falha.
+    """
+    if not deal_id or not content:
+        logger.error("Deal ID e conteúdo são obrigatórios para criar uma nota.")
+        return None
+        
+    logger.info(f"Criando nota para o Deal ID {deal_id}...")
+    
+    payload = {
+        "content": content,
+        "deal_id": deal_id,
+    }
+    
+    return await client._request("POST", "/notes", json=payload)
