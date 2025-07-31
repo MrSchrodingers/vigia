@@ -32,6 +32,51 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Utilitários internos
 # ---------------------------------------------------------------------------
+async def execute_tool_call(
+    tool_call: Dict[str, Any], 
+    raw_crm: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Executa a chamada de ferramenta solicitada pelo Diretor."""
+    tool_name = tool_call.get("name")      
+    tool_args = tool_call.get("args", {})
+    
+    person_id = raw_crm.get("person", {}).get("id")
+    deal_id = raw_crm.get("deal", {}).get("id")
+    
+    if not person_id or not deal_id:
+        msg = "Ação não pôde ser executada: ID da Pessoa ou do Negócio não encontrado no Pipedrive."
+        logger.error(msg)
+        return {"status": "falha", "detalhe": msg}
+
+    if tool_name == "AgendarFollowUp":
+        logger.info(f"Executando ferramenta: {tool_name} com args: {tool_args}")
+        result = await pipedrive_service.create_activity(
+            client=email_client,
+            person_id=person_id,
+            deal_id=deal_id,
+            due_date=tool_args.get("due_date"),
+            note_summary=tool_args.get("note"),
+            subject=tool_args.get("subject")
+        )
+        return {"status": "sucesso", "resultado_pipedrive": result}
+        
+    elif tool_name == "AlertarSupervisorParaAtualizacao":
+        logger.warning(f"Executando ferramenta de alerta: {tool_name} com args: {tool_args}")
+        subject = f"[{tool_args.get('urgencia').upper()}] REVISAR/ATUALIZAR: {raw_crm.get('deal', {}).get('title', 'Negócio')}"
+        result = await pipedrive_service.create_activity(
+            client=email_client,
+            person_id=person_id,
+            deal_id=deal_id,
+            due_date=tool_args.get("due_date"),
+            note_summary=tool_args.get("motivo"),
+            subject=subject
+        )
+        return {"status": "sucesso", "resultado_pipedrive": result}
+
+    else:
+        logger.error(f"Tentativa de chamar uma ferramenta desconhecida: {tool_name}")
+        return {"status": "erro", "detalhe": "Ferramenta não encontrada."}
+    
 def _format_summary_for_note(summary_data: Dict[str, Any]) -> str:
     """Formata o JSON do sumário em um texto HTML rico e legível para a nota do Pipedrive."""
     if not summary_data or "erro" in summary_data:
@@ -200,7 +245,6 @@ async def run_temperature_department(history_txt: str, meta: Dict[str, Any]) -> 
 # ---------------------------------------------------------------------------
 # Pipeline principal
 # ---------------------------------------------------------------------------
-
 async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
     conv_id = payload.get("conversation_id")
     save_result = payload.get("save_result", False)
@@ -232,18 +276,40 @@ async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
     kpis = _build_kpis(thread_meta, extract_data)
 
     # 4) Diretoria ==========================================================
-    director_raw = await director_agent.execute(json.dumps(extract_data), json.dumps(temp_data), conv_id)
+    logger.info("-- Solicitando decisão do Diretor Estratégico...")
+    director_raw = await director_agent.execute(
+        extraction_report=json.dumps(extract_data), 
+        temperature_report=json.dumps(temp_data),
+        crm_context=json.dumps(raw_crm),
+        conversation_id=conv_id
+    )
+    
+    director_decision = {}
+    pipedrive_actions_results = [] 
     try:
-        director_json = _safe_json_loads(director_raw)
-    except json.JSONDecodeError:
-        director_json = {"erro": "output inválido", "raw": director_raw}
+        decision_json = {}
+        if isinstance(director_raw, dict):
+            decision_json = director_raw
+        else:
+            decision_json = _safe_json_loads(director_raw)
+        
+        tool_name = decision_json.get("name") 
+        tool_args = decision_json.get("args") 
 
-    if "acao" in director_json:
-        logger.info("Diretor solicitou ação %s", director_json["acao"].get("nome_ferramenta"))
-        director_json = {
-            "acao_executada": director_json["acao"],
-            "resultado_execucao": "simulado",
-        }
+        if tool_name and tool_args is not None:
+            logger.info(f"Diretor solicitou a ferramenta: {tool_name}")
+            execution_result = await execute_tool_call(decision_json, raw_crm)
+            director_decision = {
+                "acao_executada": decision_json,
+                "resultado_execucao": execution_result
+            }
+            pipedrive_actions_results.append(director_decision)
+        else:
+            director_decision = {"resumo_estrategico": decision_json.get("resumo_estrategico", "N/A")}
+
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"Não foi possível decodificar ou processar a decisão do diretor: {e}")
+        director_decision = {"erro": "Decisão do diretor mal formatada", "raw_output": str(director_raw)}
 
     # 5) Advisor Judicial ===================================================
     advisor_payload = {
@@ -275,7 +341,6 @@ async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("Erro ao decodificar o JSON do sumário: %s", e)
         summary_json = {"erro": "summarizer output inválido", "raw": summary_raw}
         
-    pipedrive_actions_results = []
     deal_id = raw_crm.get("deal", {}).get("id")
 
     if deal_id and "erro" not in summary_json:
@@ -302,11 +367,11 @@ async def run_department_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
         "extracted_data": extract_data,
         "temperature_analysis": temp_data,
         "kpis": kpis,
-        "director_decision": director_json,
+        "director_decision": director_decision,
         "advisor_recommendation": advisor_json,
         "context": {"crm_context": enriched_ctx},
         "formal_summary": summary_json,
-        "pipedrive_actions": pipedrive_actions_results
+        "pipedrive_actions": pipedrive_actions_results 
     }
 
     if save_result:

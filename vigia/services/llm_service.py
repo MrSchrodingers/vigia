@@ -5,7 +5,9 @@ import asyncio
 import time     
 from collections import deque 
 
-from vigia.departments.negotiation_whatsapp.core import tools
+from vigia.departments.negotiation_whatsapp.core import tools as whatsapp_tools
+from vigia.departments.negotiation_email.core import tools as email_tools
+
 from ..config import settings
 
 # --- Configuração do Rate Limiter para o Gemini ---
@@ -45,8 +47,9 @@ async def llm_call(
     raw_response = ""
 
     available_tools = {
-        "criar_atividade_no_pipedrive": tools.CriarAtividadeNoPipedrive,
-        "alertar_supervisor": tools.AlertarSupervisor,
+        "criar_atividade_no_pipedrive": whatsapp_tools.CriarAtividadeNoPipedrive,
+        "agendar_follow_up": email_tools.AgendarFollowUp,
+        "alertar_supervisor_para_atualizacao": email_tools.AlertarSupervisorParaAtualizacao,
     }
 
     if settings.LLM_PROVIDER == "gemini":
