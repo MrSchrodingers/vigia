@@ -13,7 +13,7 @@ class EmailDirectorAgent(BaseLLMAgent):
         ### Definições de Campos-Chave e Lógica de Status
         - **Valor do Acordo no CRM**: Para obter o valor do acordo, use o campo customizado "4227f47064ecbd933c9452f49feea489a04d43e1". Se este campo não estiver disponível, use o campo "value".
         - **Etapas de Finalização**: ["ELABORAR MINUTA (Amanda)", "ACORDO EM AUDIENCIA", "PARA PROTOCOLO", "AGUARDANDO REGULARIZACAO", "BAIXADO POR ACORDO", "PAGAMENTO SOLICITADO"]
-        - **Interpretação de Status "Fechado"**: Um negócio é considerado **funcionalmente FECHADO** se seu `stage_name` estiver na lista de `Etapas de Finalização`, mesmo que o campo `status` do CRM ainda seja "open". Enão não deve haver atualização de campo `status` caso esteja na lista de `Etapas de Finalização`. 
+        - **Interpretação de Status "Fechado"**: Um negócio é considerado **funcionalmente FECHADO** se seu `stage_name` estiver na lista de `Etapas de Finalização`, mesmo que o campo `status` do CRM ainda seja "open". Então não deve haver atualização de campo `status` caso esteja na lista de `Etapas de Finalização`.
 
         ### Processo de Análise Passo-a-Passo
 
@@ -21,10 +21,12 @@ class EmailDirectorAgent(BaseLLMAgent):
         Analise o `RELATÓRIO DE EXTRAÇÃO DE DADOS` e o `CONTEXTO DO CRM`. Sua tarefa é determinar duas coisas:
         1.  **Necessidade de Ação na Conversa:** A negociação precisa de um impulso? Ela está parada, aguardando uma resposta nossa ou do cliente por um tempo considerável (mais de 5 dias)? Um follow-up foi prometido? Isso justifica um `AgendarFollowUp`.
         2.  **Necessidade de Atualização de Dados:** Existem divergências entre os dados da conversa e os do CRM (valores, estágios, etc.)? Lembre-se da regra de **Interpretação de Status "Fechado"** para evitar falsos alarmes. Uma divergência real justifica um `AlertarSupervisorParaAtualizacao`.
-
+            **Lógica de Exceção para Divergências (MUITO IMPORTANTE):**
+            - Uma exceção crucial: se o `RELATÓRIO DE EXTRAÇÃO DE DADOS` (e-mails) indicar que uma contraproposta foi enviada ao cliente e **ainda não há uma resposta de aceitação explícita**, a ausência do `Valor do Acordo no CRM` é considerada uma **situação esperada** e **NÃO DEVE** acionar a ferramenta `AlertarSupervisorParaAtualizacao` por este motivo. O alerta só é justificado se o cliente já aceitou o acordo e, mesmo assim, o valor não foi atualizado no CRM.
+        
         **Passo 2: Seleção de Ferramentas**
         Com base nas suas conclusões do Passo 1, selecione TODAS as ferramentas apropriadas.
-        - Se a negociação precisa de um impulso E os dados estão divergentes, você DEVE selecionar AMBAS as ferramentas: `AgendarFollowUp` e `AlertarSupervisorParaAtualizacao`.
+        - Se a negociação precisa de um impulso E os dados estão divergentes (considerando a lógica de exceção), você DEVE selecionar AMBAS as ferramentas: `AgendarFollowUp` e `AlertarSupervisorParaAtualizacao`.
 
         **Passo 3: Formatação da Resposta**
         - Se nenhuma ferramenta for selecionada, gere um `resumo_estrategico`.
@@ -37,7 +39,7 @@ class EmailDirectorAgent(BaseLLMAgent):
             - O campo `note` deve ser detalhado, incluindo um resumo da situação e o objetivo claro do follow-up.
 
         2.  **`AlertarSupervisorParaAtualizacao(due_date: str, urgencia: Literal['Alta', 'Média'], assunto_alerta: str, motivo: str)`**:
-            - Use se você identificou uma **Divergência** real de dados no Passo 1.
+            - Use se você identificou uma **Divergência** real de dados no Passo 1, respeitando a **Lógica de Exceção**.
             - O `motivo` deve ser construído usando **ESTRITAMENTE** os dados comparados, seguindo a estrutura:
                 1.  **Divergência:** [Descrição do problema]
                 2.  **Valor no CRM:** [Valor extraído do CONTEXTO DO CRM]
