@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Dashboard de Análise de Negociações – E‑mail v3.1
+Dashboard de Análise de Negociações – E‑mail v3.3
 -------------------------------------------------
 Abas:
-• 📊 Resumos  — KPIs gerais + métricas financeiras
-• 🔍 Análises — gráficos, heatmaps, regressões (statsmodels)
-• 📑 Tabelas  — explorador de dados detalhado + sumarizações
+• 📊 Resumos  — KPIs gerais + métricas financeiras
+• 🔍 Análises — gráficos e modelos estatísticos
+• 📑 Tabelas  — explorador de dados detalhado + sumarizações
 """
 # --------------------------------------------------------------------------
 # DEPENDÊNCIAS
@@ -25,26 +25,25 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
-from scipy import stats
 
 import statsmodels.formula.api as smf
 from statsmodels.tools.sm_exceptions import PerfectSeparationError
 
-try:                                # curva de sobrevivência
+try:
     from lifelines import KaplanMeierFitter
 except ImportError:
     KaplanMeierFitter = None
-try:                                # grafo de participantes
+try:
     import networkx as nx
 except ImportError:
     nx = None
-try:                                # nuvem de palavras
+try:
     from wordcloud import WordCloud
 except ImportError:
     WordCloud = None
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-st.set_page_config(page_title="Vigia | Dashboard E‑mail",
+st.set_page_config(page_title="Vigia | Dashboard E‑mail",
                    page_icon="📧", layout="wide")
 
 PLOTLY_TEMPLATE = "plotly_dark"
@@ -168,7 +167,7 @@ def tab_resumos(df: pd.DataFrame):
     avg_emails    = df["email_count"].mean()
     avg_res_days  = df["tempo_resolucao_dias"].mean()
 
-    estatus       = find_col(df, ["negociacao_status_acordo"])
+    estatus       = find_col(df, ["status_acordo"])
     valor_cols    = df["valor_proposta"].dropna()
     total_valor   = valor_cols.sum()
     ticket_medio  = valor_cols.mean()
@@ -178,7 +177,7 @@ def tab_resumos(df: pd.DataFrame):
     valor_fech    = df.loc[df[estatus].eq("Acordo Fechado") if estatus else [], "valor_proposta"].sum()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Threads analisadas",         total_threads)
+    c1.metric("Threads analisadas",           total_threads)
     c2.metric("Média de e‑mails / thread", f"{avg_emails:,.1f}")
     c3.metric("Tempo médio de resolução",  f"{avg_res_days:,.1f} dias")
     c4.metric("Taxa de acordo fechado",    f"{taxa_fech:,.1f}%")
@@ -238,10 +237,10 @@ def tab_analises(df: pd.DataFrame):
         ordem = ["Proposta Inicial","Contraproposta","Esclarecimento de Dúvidas",
                  "Acordo Fechado","Acordo Rejeitado"]
         funil_df = (df[est_col].value_counts()
-                    .reindex(ordem).fillna(0).reset_index()
-                    .rename(columns={"index": "Estágio", est_col: "Threads"}))
+                       .reindex(ordem).fillna(0).reset_index()
+                       .rename(columns={"index": "Estágio", est_col: "Threads"}))
         fig_funil = px.funnel(funil_df, x="Threads", y="Estágio",
-                              template=PLOTLY_TEMPLATE)
+                               template=PLOTLY_TEMPLATE)
         st.plotly_chart(fig_funil, use_container_width=True)
 
     # 3. Histograma tempo de resolução
@@ -281,51 +280,19 @@ def tab_analises(df: pd.DataFrame):
 
     st.divider()
 
-    # 6. Volume semanal + ACF
-    st.markdown("#### Volume semanal de threads & ACF")
+    # 6. Volume semanal
+    st.markdown("#### Volume semanal de threads")
     ts = df.set_index("created_at").resample("W")["analysable_id"].nunique()
-    col_vol, col_acf = st.columns(2)
-    with col_vol:
-        fig_vol = px.bar(ts, labels={"value": "Threads", "created_at": "Semana"},
-                         template=PLOTLY_TEMPLATE)
-        st.plotly_chart(fig_vol, use_container_width=True)
-    with col_acf:
-        if len(ts) >= 6:
-            lags = range(1, min(13, len(ts)))
-            acf_vals = [ts.autocorr(l) for l in lags]  # noqa: E741
-            lim = 1.96 / np.sqrt(len(ts))
-            fig_acf = go.Figure([
-                go.Bar(x=list(lags), y=acf_vals, name="ACF"),
-                go.Scatter(x=list(lags), y=[lim]*len(lags), mode="lines",
-                           line=dict(dash="dash"), name="Limite 95%"),
-                go.Scatter(x=list(lags), y=[-lim]*len(lags), mode="lines",
-                           line=dict(dash="dash"), name="-95%")])
-            fig_acf.update_layout(template=PLOTLY_TEMPLATE,
-                                  xaxis_title="Lag (semanas)", yaxis_title="ACF")
-            st.plotly_chart(fig_acf, use_container_width=True)
-        else:
-            st.info("Mínimo de 6 pontos semanais necessário para ACF.")
-
+    fig_vol = px.bar(ts, labels={"value": "Threads", "created_at": "Semana"},
+                       template=PLOTLY_TEMPLATE)
+    st.plotly_chart(fig_vol, use_container_width=True)
+    
     st.divider()
 
     # 7. Modelos em statsmodels ------------------------------------------------
     st.markdown("### 📐 Modelagens (statsmodels)")
 
-    # 7.1 OLS: Valor ~ Emails + Tempo + Estágio
-    if "valor_proposta" in df and "email_count" in df and "tempo_resolucao_dias" in df:
-        st.markdown("#### OLS: Valor proposto ~ Emails + Tempo + Estágio")
-        formula = "valor_proposta ~ email_count + tempo_resolucao_dias"
-        if est_col:
-            formula += f" + C({est_col})"
-        ols_df = df[[c for c in ["valor_proposta","email_count",
-                                 "tempo_resolucao_dias", est_col] if c]].dropna()
-        if len(ols_df) >= 8:          # mínimo para evitar overfit excessivo
-            model_ols = smf.ols(formula, data=ols_df).fit()
-            st.write(model_ols.summary())
-        else:
-            st.info("Dados insuficientes para OLS.")
-
-    # 7.2 Logit: Prob. Fechar ~ Emails + Tempo
+    # 7.1 Logit: Prob. Fechar ~ Emails + Tempo
     if stat_col and set(df[stat_col].dropna().unique()) >= {"Acordo Fechado", "Proposta"}:
         st.markdown("#### Logit: probabilidade de fechar")
         log_df = df[[stat_col, "email_count", "tempo_resolucao_dias"]].dropna()
@@ -343,7 +310,7 @@ def tab_analises(df: pd.DataFrame):
                 fig_log = go.Figure([
                     go.Scatter(x=xs, y=probs, mode="lines", name="Prob. fechar"),
                     go.Scatter(x=log_df.email_count, y=log_df.y+0.02, mode="markers",
-                               name="Dados", marker=dict(size=4))
+                             name="Dados", marker=dict(size=4))
                 ])
                 fig_log.update_layout(template=PLOTLY_TEMPLATE,
                                       xaxis_title="E‑mails por thread",
@@ -352,7 +319,7 @@ def tab_analises(df: pd.DataFrame):
             except PerfectSeparationError:
                 st.warning("Perfect separation: não foi possível ajustar o Logit.")
 
-    # 7.3 Curva de Sobrevivência
+    # 7.2 Curva de Sobrevivência
     if KaplanMeierFitter and "tempo_resolucao_dias" in df and stat_col:
         st.markdown("#### Curva de sobrevivência – tempo até acordo")
         km_df = df[["tempo_resolucao_dias", stat_col]].dropna()
@@ -368,40 +335,7 @@ def tab_analises(df: pd.DataFrame):
                                    xaxis_title="Dias", yaxis_title="P(NÃO fechado)")
             st.plotly_chart(fig_surv, use_container_width=True)
 
-    # --- 8. Associação entre variáveis categóricas (Cramér V) --------------------
-    with st.expander("📈 Associação entre variáveis categóricas (Cramér V)"):
-        cats = [c for c in [est_col, stat_col, tom_col] if c]
-        if len(cats) >= 2:
-
-            def cramers_v(x, y) -> float:
-                """Cálculo robusto de Cramér V (retorna NaN se não houver dados)."""
-                conf = pd.crosstab(x, y)
-                # tabela vazia ou com 1 linha/coluna ⇒ não dá para calcular
-                if conf.empty or (conf.shape[0] < 2) or (conf.shape[1] < 2):
-                    return np.nan
-                try:
-                    chi2 = stats.chi2_contingency(conf, correction=False)[0]
-                except ValueError:          # “observed has size 0”
-                    return np.nan
-                n = conf.values.sum()
-                r, k = conf.shape
-                return np.sqrt((chi2 / n) / (min(k - 1, r - 1)))
-
-            mat = np.full((len(cats), len(cats)), np.nan)
-            for i, j in itertools.combinations(range(len(cats)), 2):
-                mat[i, j] = mat[j, i] = cramers_v(df[cats[i]], df[cats[j]])
-
-            if np.isfinite(mat).any():
-                fig_cr = px.imshow(
-                    mat, x=cats, y=cats, text_auto=".2f",
-                    color_continuous_scale="Blues", template=PLOTLY_TEMPLATE,
-                    title="Cramér V – associação categórica"
-                )
-                st.plotly_chart(fig_cr, use_container_width=True)
-            else:
-                st.info("Não há pares de categorias suficientes para calcular Cramér V.")
-
-    # 9. Rede de participantes
+    # 8. Rede de participantes
     if nx and "participants" in df.columns:
         with st.expander("🔗 Rede de participantes"):
             edges = []
@@ -431,7 +365,7 @@ def tab_analises(df: pd.DataFrame):
             else:
                 st.info("Rede muito pequena para visualização.")
 
-    # 10. Word‑cloud de argumentos legais
+    # 9. Word‑cloud de argumentos legais
     if WordCloud and "argumentos_legais" in df.columns:
         with st.expander("☁️ Word‑cloud de argumentos legais"):
             text = " ".join(itertools.chain.from_iterable(df["argumentos_legais"].dropna()))
@@ -479,10 +413,10 @@ def tab_tabelas(df: pd.DataFrame):
                                "ticket_medio":"Ticket Médio (R$)"}, inplace=True)
         st.dataframe(resumo.style.format({"Valor Total (R$)":"R$ {:.2f}",
                                           "Ticket Médio (R$)":"R$ {:.2f}"}),
-                     use_container_width=True)
+                       use_container_width=True)
 
 # --------------------------------------------------------------------------
-# ABA 6 – ANÁLISE INDIVIDUAL (E-mail)
+# ABA 4 – ANÁLISE INDIVIDUAL (E-mail)
 # --------------------------------------------------------------------------
 def get_id_col(df: pd.DataFrame) -> str:
     for cand in ("analysis_id", "id"):
@@ -513,14 +447,20 @@ def tab_email_individual(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> Non
     df_view = df_filtered.copy()
     df_view["id_str"] = df_view[id_col].astype(str)
 
-    # tenta extrair um “assunto” (nº do processo) do JSON flat
-    subj_col = find_col(df_view, ["extracted_assunto_numero_processo", "extracted_assunto"])
-    df_view["assunto"] = (
-        df_view[subj_col]
-        .fillna("Assunto indisponível")
-        .astype(str)
-        .str.slice(0, 60)          # evita rótulos gigantes
-    )
+    # Tenta extrair um “assunto” (nº do processo) do JSON flat ou da coluna subject
+    subj_col = find_col(df_view, ["subject", "extracted_numero_processo", "extracted_nome_parte"])
+
+    if subj_col:
+        df_view["assunto"] = (
+            df_view[subj_col]
+            .fillna("Assunto indisponível")
+            .astype(str)
+            .str.slice(0, 60)  # evita rótulos gigantes
+        )
+    else:
+        # Se nenhuma coluna de assunto for encontrada, cria uma padrão
+        df_view["assunto"] = "Assunto indisponível"
+
 
     labels = (
         df_view["created_at"].dt.strftime("%d/%m/%Y %H:%M")
@@ -555,7 +495,6 @@ def tab_email_individual(df_raw: pd.DataFrame, df_filtered: pd.DataFrame) -> Non
             "advisor": "advisor_recommendation",
             "pipedrive": "context",
             "summary": "formal_summary",
-            
         }[prefix]
 
         # 3a) blob bruto existe?
