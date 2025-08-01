@@ -8,6 +8,7 @@ from .extraction_specialist_agents import (
     NegotiationStageSpecialistAgent,
     EmailBehavioralAgent,
 )
+from .extraction_adversarial_agents import ExtractionValidatorAgent, ExtractionRefinerAgent
 
 # --- Manager e Diretor (ficam em módulos separados) ---
 from .extraction_manager_agent import EmailManagerAgent
@@ -28,6 +29,8 @@ extraction_subject_agent = SubjectDataExtractorAgent()
 extraction_legal_financial_agent = LegalFinancialSpecialistAgent()
 extraction_stage_agent = NegotiationStageSpecialistAgent()
 extraction_manager_agent = EmailManagerAgent()
+validator_agent = ExtractionValidatorAgent()
+refiner_agent = ExtractionRefinerAgent()
 
 # --- Instâncias dos Agentes de Temperatura ---
 temperature_behavioral_agent = EmailBehavioralAgent()
@@ -51,5 +54,7 @@ __all__ = [
     "temperature_behavioral_agent",
     "director_agent",
     "judicial_negotiation_advisor_agent",
-    "formal_summarizer_agent"
+    "formal_summarizer_agent",
+    "validator_agent ",
+    "refiner_agent ",
 ]

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import asyncio
 from collections import deque
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_exception
+from vigia.departments.negotiation_email.utils.pipedrive_context_mapper import CUSTOM_FIELD_KEYS
 
 from ..config import settings
 
@@ -182,11 +183,16 @@ def _format_deal_details(data: Dict[str, Any]) -> Dict[str, Any]:
     """Formata a resposta detalhada de um deal em um dicionário limpo e útil."""
     if not data: 
         return {}
+    valor_acordo_key = CUSTOM_FIELD_KEYS.get("valor_do_acordo")
+    deal_value = data.get(valor_acordo_key) or data.get("value")
     custom_fields = {k: v for k, v in data.items() if re.match(r'^[0-9a-f]{40}$', k)}
+    
     return {
-        "id": data.get("id"), "title": data.get("title"), "value": data.get("value"),
+        "id": data.get("id"), "title": data.get("title"), "value": deal_value,
         "formatted_value": data.get("formatted_value"), "currency": data.get("currency"),
-        "status": data.get("status"), "person_id": data.get("person_id", {}).get("value"),
+        "status": data.get("status"),
+        "user_id": data.get("user_id", {}).get("value"),
+        "person_id": data.get("person_id", {}).get("value"),
         "person_name": data.get("person_name"), "owner_name": data.get("owner_name"),
         "stage_id": data.get("stage_id"), "pipeline_id": data.get("pipeline_id"),
         "notes": [], "add_time": data.get("add_time"), "update_time": data.get("update_time"),
@@ -370,6 +376,7 @@ async def create_activity(
     due_date: str,
     note_summary: str,
     deal_id: Optional[int] = None,
+    user_id: Optional[int] = None,
     subject: str = "Follow-up de Negociação"
 ) -> Optional[Dict[str, Any]]:
     """
@@ -391,6 +398,9 @@ async def create_activity(
     }
     if deal_id:
         payload["deal_id"] = deal_id
+        
+    if user_id:
+        payload["user_id"] = user_id
 
     return await client._request("POST", "/activities", json=payload)
 

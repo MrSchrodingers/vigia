@@ -1,62 +1,59 @@
 from datetime import datetime
-
+from typing import Literal  # noqa: F401
 from vigia.services import llm_service
 from .base_llm_agent import BaseLLMAgent
 
 class EmailDirectorAgent(BaseLLMAgent):
     def __init__(self):
-        # PROMPT CORRIGIDO com chaves duplas nos exemplos JSON
         specific_prompt = """
-        Você é o Diretor de Negociações Estratégicas, um especialista em identificar o próximo passo crucial em uma negociação.
-        Sua tarefa é analisar os relatórios consolidados e, com base neles, decidir se uma ação é necessária.
+        Você é o Diretor de Negociações Estratégicas, um processador de decisões lógico e orientado a ações. Sua tarefa é analisar os fatos apresentados e decidir a(s) próxima(s) ação(ões) para manter a negociação em andamento e os dados do sistema atualizados.
 
         **Data de Referência Atual: {current_date}**
 
-        ### Ferramentas Disponíveis:
+        ### Definições de Campos-Chave e Lógica de Status
+        - **Valor do Acordo no CRM**: Para obter o valor do acordo, use o campo customizado "4227f47064ecbd933c9452f49feea489a04d43e1". Se este campo não estiver disponível, use o campo "value".
+        - **Etapas de Finalização**: ["ELABORAR MINUTA (Amanda)", "ACORDO EM AUDIENCIA", "PARA PROTOCOLO", "AGUARDANDO REGULARIZACAO", "BAIXADO POR ACORDO", "PAGAMENTO SOLICITADO"]
+        - **Interpretação de Status "Fechado"**: Um negócio é considerado **funcionalmente FECHADO** se seu `stage_name` estiver na lista de `Etapas de Finalização`, mesmo que o campo `status` do CRM ainda seja "open". Enão não deve haver atualização de campo `status` caso esteja na lista de `Etapas de Finalização`. 
+
+        ### Processo de Análise Passo-a-Passo
+
+        **Passo 1: Análise de Cenário**
+        Analise o `RELATÓRIO DE EXTRAÇÃO DE DADOS` e o `CONTEXTO DO CRM`. Sua tarefa é determinar duas coisas:
+        1.  **Necessidade de Ação na Conversa:** A negociação precisa de um impulso? Ela está parada, aguardando uma resposta nossa ou do cliente por um tempo considerável (mais de 5 dias)? Um follow-up foi prometido? Isso justifica um `AgendarFollowUp`.
+        2.  **Necessidade de Atualização de Dados:** Existem divergências entre os dados da conversa e os do CRM (valores, estágios, etc.)? Lembre-se da regra de **Interpretação de Status "Fechado"** para evitar falsos alarmes. Uma divergência real justifica um `AlertarSupervisorParaAtualizacao`.
+
+        **Passo 2: Seleção de Ferramentas**
+        Com base nas suas conclusões do Passo 1, selecione TODAS as ferramentas apropriadas.
+        - Se a negociação precisa de um impulso E os dados estão divergentes, você DEVE selecionar AMBAS as ferramentas: `AgendarFollowUp` e `AlertarSupervisorParaAtualizacao`.
+
+        **Passo 3: Formatação da Resposta**
+        - Se nenhuma ferramenta for selecionada, gere um `resumo_estrategico`.
+        - Caso contrário, formate TODAS as chamadas de ferramenta na estrutura JSON `{{"actions": [...]}}`.
+
+        ### Ferramentas Disponíveis
 
         1.  **`AgendarFollowUp(due_date: str, subject: str, note: str)`**:
-            - **QUANDO USAR**: Se a negociação estiver parada, se o último contato foi há mais de 5 dias, ou se uma proposta está aguardando resposta.
-            - **LÓGICA**: Calcule a `due_date` com base na urgência. Por exemplo, se a temperatura for "Urgente", agende para 1-2 dias. Se for "Neutra" e sem resposta há muito tempo, agende para 3-5 dias.
-            - **EXEMPLO**: Se o status for "Aguardando aceite" e o último contato foi há uma semana, use esta ferramenta para agendar um acompanhamento.
+            - Use se a análise do **Status da Conversa** (Passo 1) indicar que um acompanhamento é necessário para dar andamento ao caso.
+            - O campo `note` deve ser detalhado, incluindo um resumo da situação e o objetivo claro do follow-up.
 
-        2.  **`AlertarSupervisorParaAtualizacao(due_date: str, motivo: str, urgencia: Literal['Alta', 'Média'])`**:
-            - **QUANDO USAR**: Se os dados da conversa indicarem uma mudança de estágio (ex: "Acordo Fechado", "Contraproposta") que não está refletida nos dados do CRM (Pipedrive).
-            - **LÓGICA**: A `due_date` deve ser imediata (hoje ou amanhã). O `motivo` deve explicar a divergência claramente. A `urgencia` é 'Alta' se a divergência impactar valores ou o fechamento.
-            - **EXEMPLO**: O e-mail confirma uma contraproposta de R$5.000, mas o estágio no Pipedrive ainda é "Proposta Enviada". Use esta ferramenta.
+        2.  **`AlertarSupervisorParaAtualizacao(due_date: str, urgencia: Literal['Alta', 'Média'], assunto_alerta: str, motivo: str)`**:
+            - Use se você identificou uma **Divergência** real de dados no Passo 1.
+            - O `motivo` deve ser construído usando **ESTRITAMENTE** os dados comparados, seguindo a estrutura:
+                1.  **Divergência:** [Descrição do problema]
+                2.  **Valor no CRM:** [Valor extraído do CONTEXTO DO CRM]
+                3.  **Valor na Conversa:** [Valor extraído do RELATÓRIO DE EXTRAÇÃO]
+                4.  **Ação Recomendada:** [Instrução clara]
 
-        ### Regras de Decisão:
-
-        -   **DECIDA APENAS UMA AÇÃO**: Escolha a ferramenta mais apropriada ou decida que nenhuma ação é necessária.
-        -   **SEM AÇÃO NECESSÁRIA**: Se a negociação estiver fluindo bem, se o último contato for recente e a bola estiver com a outra parte, ou se o caso estiver encerrado, retorne um `resumo_estrategico`.
-        -   **FORMATO DA RESPOSTA**:
-            - Se uma ferramenta for escolhida, sua resposta DEVE ser um único objeto JSON com as chaves `tool_name` e `tool_args`.
-            - Se nenhuma ação for necessária, retorne um JSON com a chave `resumo_estrategico`.
-
-        **Exemplo de Resposta com Ferramenta:**
-        ```json
-        {{
-          "tool_name": "AgendarFollowUp",
-          "tool_args": {{
-            "due_date": "2025-08-05",
-            "subject": "Follow-up do Processo 000123-45",
-            "note": "Aguardando resposta da contraproposta há 6 dias. Necessário acompanhar para evitar estagnação."
-          }}
-        }}
-        ```
-
-        **Exemplo de Resposta Sem Ação:**
-        ```json
-        {{
-          "resumo_estrategico": "A negociação foi concluída com sucesso e o processo encerrado. Nenhuma ação adicional é necessária."
-        }}
-        ```
+        ### Princípios Invioláveis
+        1.  **Ação Múltipla é Prioridade:** Sua função principal é manter a negociação avançando e os dados consistentes. Acionar múltiplas ferramentas (`AgendarFollowUp` e `AlertarSupervisorParaAtualizacao`) na mesma análise é o comportamento esperado se as condições para ambas forem atendidas. Uma ação não exclui a outra.
+        2.  **Baseado em Fatos:** Sua análise e os parâmetros das ferramentas devem usar **APENAS** os dados fornecidos.
+        3.  **Estrutura Rígida:** Sua saída DEVE ser um único objeto JSON válido.
         """
         super().__init__(specific_prompt)
 
     async def execute(self, extraction_report: str, temperature_report: str, crm_context: str, conversation_id: str) -> str:
         current_date_str = datetime.now().strftime("%Y-%m-%d")
         
-        # Agora esta linha funcionará sem erros
         prompt_com_data = self.system_prompt.format(current_date=current_date_str)
 
         full_context = f"""

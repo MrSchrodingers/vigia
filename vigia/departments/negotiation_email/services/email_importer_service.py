@@ -54,7 +54,6 @@ class EmailImporterService:
         if not relevant_emails:
             return
 
-        # CORREÇÃO: Agrupar e processar os dados da thread ANTES de salvar
         threads_data = self._process_emails_into_threads(relevant_emails)
 
         if threads_data:

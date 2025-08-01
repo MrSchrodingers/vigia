@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple, Optional
 from vigia.services import pipedrive_service
 from vigia.services.pipedrive_service import email_client
 from vigia.departments.negotiation_whatsapp.agents.context_agent import ContextSynthesizerAgent
+from vigia.departments.negotiation_email.utils import enrich_deal_with_context
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +58,23 @@ class EmailDataMinerAgent:
             logger.error("Não foi possível encontrar um deal correspondente para o assunto.")
             return {"person": None, "deal": None}
         
-        logger.info(f"Deal ID {deal_details.get('id')} encontrado.")
+        logger.info(f"Deal ID {deal_details.get('id')} encontrado. Enriquecendo com contexto...")
+        enriched_deal_details = enrich_deal_with_context(deal_details)
 
         # --- Busca da Pessoa ---
-        person_id = deal_details.get("person_id")
+        person_id = enriched_deal_details.get("person_id")
         if not person_id:
-            logger.error(f"O Deal ID {deal_details.get('id')} não tem uma pessoa associada.")
-            return {"person": None, "deal": deal_details}
+            logger.error(f"O Deal ID {enriched_deal_details.get('id')} não tem uma pessoa associada.")
+            return {"person": None, "deal": enriched_deal_details}
             
         person_details = await pipedrive_service.find_person_by_id(email_client, person_id)
         if not person_details:
             logger.error(f"Não foi possível encontrar a Pessoa ID {person_id}.")
-            return {"person": None, "deal": deal_details}
+            return {"person": None, "deal": enriched_deal_details}
 
         logger.info(f"Pessoa ID {person_details.get('id')} encontrada.")
-        return {"person": person_details, "deal": deal_details}
+        
+        return {"person": person_details, "deal": enriched_deal_details}
 
 # --- Instanciando os Agentes ---
 data_miner_agent = EmailDataMinerAgent()

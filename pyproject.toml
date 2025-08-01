@@ -26,6 +26,9 @@ streamlit          = "^1.47.0"
 tiktoken           = "^0.9.0"
 numpy              = "<2"
 
+# ------------- HTML --------------
+beautifulsoup4     = "^4.13.4"
+
 # ------------- infra -------------
 sqlalchemy         = "^2.0.42"
 psycopg2-binary    = "^2.9.10"
