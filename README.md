@@ -1,15 +1,17 @@
 # Projeto VigIA: Agente Supervisor de IA
 
-> **VigIA** é um sistema autônomo de IA projetado para atuar como um supervisor em conversas de negociação. Utilizando uma arquitetura multiagente, ele se integra a plataformas de comunicação para analisar, extrair dados, avaliar o sentimento e tomar decisões estratégicas sobre o andamento das negociações em tempo real.
+> **VigIA** é um sistema autônomo de IA projetado para atuar como um supervisor em conversas de negociação. Utilizando uma arquitetura multiagente e polimórfica, ele se integra a plataformas de comunicação como WhatsApp e E-mail para analisar, extrair dados, avaliar o sentimento e tomar decisões estratégicas sobre o andamento das negociações em tempo real.
 
 ## Índice
 
-  - [Conceitos Principais: Arquitetura Organizacional de IA](https://www.google.com/search?q=%23conceitos-principais-arquitetura-organizacional-de-ia)
-  - [Arquitetura de Sistema](https://www.google.com/search?q=%23arquitetura-de-sistema)
-  - [Fluxos de Análise dos Departamentos de IA](https://www.google.com/search?q=%23fluxos-de-an%C3%A1lise-dos-departamentos-de-ia)
-  - [Dashboard de Análises](https://www.google.com/search?q=%23dashboard-de-an%C3%A1lises)
-  - [Como Executar (Guia Prático)](https://www.google.com/search?q=%23como-executar-guia-pr%C3%A1tico)
-  - [Tecnologias Utilizadas](https://www.google.com/search?q=%23tecnologias-utilizadas)
+- [Conceitos Principais: Arquitetura Organizacional de IA](#conceitos-principais-arquitetura-organizacional-de-ia)
+- [Arquitetura de Sistema](#arquitetura-de-sistema)
+- [Fluxos de Análise dos Departamentos de IA](#fluxos-de-análise-dos-departamentos-de-ia)
+  - [Fluxo do Departamento de WhatsApp](#fluxo-do-departamento-de-whatsapp)
+  - [Fluxo do Departamento de E-mail](#fluxo-do-departamento-de-e-mail)
+- [Dashboard de Análises](#dashboard-de-análises)
+- [Como Executar (Guia Prático)](#como-executar-guia-prático)
+- [Tecnologias Utilizadas](#tecnologias-utilizadas)
 
 -----
 
@@ -17,9 +19,10 @@
 
 O VigIA emula uma estrutura organizacional para decompor a complexa tarefa de análise de conversas. Cada "departamento" é composto por agentes de IA com diferentes especializações e vieses, trabalhando em paralelo e em hierarquia para produzir um relatório coeso e confiável.
 
-  - **Princípio da Diversidade Cognitiva:** Inspirado no conceito de que equipes com diferentes pontos de vista tomam decisões melhores, o VigIA emprega agentes com "personalidades" distintas (ex: um `cauteloso` e um `inquisitivo`) para analisar a mesma informação, reduzindo vieses e aumentando a precisão.
-  - **Hierarquia de Análise:** A informação flui de agentes *especialistas* (focados em tarefas pequenas) para agentes *gerentes* (que sintetizam informações) e, finalmente, para um agente *diretor* (que toma a decisão estratégica).
-  - **Fonte Única da Verdade:** Embora os agentes gerem suas análises, o histórico completo da conversa, persistido no banco de dados, é sempre a fonte final da verdade, usada pelos agentes gerentes para validar e refinar as conclusões preliminares.
+- **Orquestração Geral:** Um "Diretor-Geral" atua como a camada de entrada, roteando cada nova comunicação para o departamento especializado correto (WhatsApp ou E-mail) com base na sua origem.
+- **Princípio da Diversidade Cognitiva:** Inspirado no conceito de que equipes com diferentes pontos de vista tomam decisões melhores, o VigIA emprega agentes com "personalidades" distintas (ex: um `cauteloso` e um `inquisitivo`) para analisar a mesma informação, reduzindo vieses e aumentando a precisão.
+- **Hierarquia de Análise:** A informação flui de agentes *especialistas* (focados em tarefas pequenas) para agentes *gerentes* (que sintetizam informações) e, finalmente, para um agente *diretor* (que toma a decisão estratégica final para aquele departamento).
+- **Fonte Única da Verdade:** Embora os agentes gerem suas análises, o histórico completo da conversa, persistido no banco de dados, é sempre a fonte final da verdade, usada pelos agentes gerentes para validar e refinar as conclusões preliminares.
 
 -----
 
@@ -29,27 +32,34 @@ O sistema é construído sobre uma arquitetura de microsserviços containerizada
 
 ```mermaid
 graph TD
-    subgraph "Infraestrutura Externa"
+    subgraph "Fontes de Comunicação"
         A[Evolution API - WhatsApp]
+        I[Microsoft Graph API - E-mail]
+    end
+
+    subgraph "Infraestrutura Externa"
         G[Pipedrive CRM]
     end
 
     subgraph "Infraestrutura VigIA (Docker Compose)"
-        B(FastAPI - API Ingestion)
+        B(FastAPI - API de Ingestão)
         C(Redis - Cache & Message Broker)
         D(Celery - Worker de Análise)
         E(PostgreSQL - Banco de Dados)
-        H(Streamlit - Dashboard)
+        H_WHATS(Streamlit - Dashboard WhatsApp)
+        H_EMAIL(Streamlit - Dashboard E-mail)
 
         subgraph "Processamento Assíncrono"
             direction LR
+            D -- Roteia para Depto. --> D
             D -- Busca Histórico --> E
             D -- Busca Contexto --> G
-            D -- Chama LLMs --> F{LLM Providers}
+            D -- Chama LLMs --> F{Provedores de LLM}
             D -- Salva Análise --> E
         end
         
-        H -- Lê Análises --> E
+        H_WHATS -- Lê Análises --> E
+        H_EMAIL -- Lê Análises --> E
     end
 
     subgraph "Provedores de IA"
@@ -57,45 +67,39 @@ graph TD
     end
 
     A -- Webhook --> B
+    I -- Webhook --> B
     B -- Enfileira Tarefa --> C
     D -- Consome Tarefa --> C
-```
+````
 
-  - **Ingestion API (`FastAPI`):** Um endpoint leve que recebe webhooks, valida minimamente e enfileira a tarefa no Redis. Sua única responsabilidade é a ingestão rápida.
+  - **API de Ingestão (`FastAPI`):** Um endpoint leve que recebe webhooks de múltiplas fontes (WhatsApp, E-mail), adiciona uma tag de `source` ao payload e enfileira a tarefa no Redis para processamento assíncrono.
   - **Message Broker (`Redis`):** Atua como o intermediário que desacopla a API do Worker. Armazena a fila de tarefas a serem processadas.
-  - **Analysis Worker (`Celery`):** O coração do sistema. Consome tarefas da fila, orquestra o ciclo de análise dos agentes de IA e persiste os resultados. Pode ser escalado horizontalmente para aumentar a capacidade de processamento.
-  - **Database (`PostgreSQL`):** Armazena de forma persistente as conversas, mensagens e os resultados estruturados das análises de IA.
-  - **Dashboard (`Streamlit`):** Uma interface web interativa para visualização e análise dos dados gerados pelo VigIA.
+  - **Worker de Análise (`Celery`):** O coração do sistema. Consome tarefas da fila, invoca o "Diretor-Geral" para rotear a tarefa, orquestra o ciclo de análise dos agentes de IA do departamento correspondente e persiste os resultados no banco de dados.
+  - **Database (`PostgreSQL`):** Armazena de forma persistente as conversas, mensagens, threads de e-mail e os resultados estruturados e polimórficos das análises de IA.
+  - **Dashboards (`Streamlit`):** Interfaces web interativas para visualização e análise dos dados gerados pelo VigIA, com um dashboard dedicado para cada departamento (WhatsApp e E-mail).
 
 -----
 
 ## Fluxos de Análise dos Departamentos de IA
 
-O processamento dentro do worker é dividido em fases e departamentos que operam de forma sequencial e paralela para enriquecer e analisar os dados. **Clique em cada departamento para expandir e ver os detalhes.**
+O processamento dentro do worker é dividido em departamentos que operam com estratégias de IA distintas. **Clique em cada departamento para expandir e ver os detalhes.**
 
-**Fase 1. Departamento de Contexto (Estratégia GAN)**
+### Fluxo do Departamento de WhatsApp
 
-**Objetivo:** Enriquecer o histórico da conversa com dados externos de um CRM (Pipedrive) antes da análise principal.
+**Estratégia Principal:** *Tree of Thoughts (ToT)* para extração de dados e análise de sentimento, com pré-processamento de áudio.
 
-```mermaid
-graph TD
-    A[ID da Conversa] --> B(Agente Minerador de Dados);
-    B -- Dados brutos do CRM (JSON) --> C(Agente Sintetizador de Contexto);
-    C -- Contexto Formatado (Texto) --> D[Output: Histórico Enriquecido];
-```
+**Fase 1: Pré-processamento e Contexto**
 
-  - **Agente Minerador de Dados (Gerador):** Busca informações de contatos e negócios no Pipedrive a partir do ID da conversa.
-  - **Agente Sintetizador de Contexto (Validador):** Recebe os dados brutos do CRM e os formata em um resumo textual claro e conciso, que é então pré-anexado ao histórico da conversa.
+  - **Transcrição de Áudio:** O histórico da conversa é analisado. Segmentos de áudio (`[ÁUDIO...]`) são identificados e transcritos usando um agente especializado com o modelo Whisper. O texto transcrito substitui a tag de áudio no histórico.
+  - **Departamento de Contexto (Estratégia GAN):** Um agente "Minerador" busca dados no Pipedrive a partir do telefone. Um agente "Sintetizador" formata esses dados em um resumo textual claro que é pré-anexado ao histórico.
 
-**Fase 2. Departamentos de Extração e Temperatura (Execução Paralela)**
+**Fase 2: Extração e Temperatura (Execução Paralela)**
 
-**Objetivo:** Extrair fatos estruturados e avaliar o sentimento da conversa de forma simultânea.
-
-  - **Departamento de Extração de Dados (Estratégia ToT - Tree of Thoughts):**
+  - **Departamento de Extração de Dados (Tree of Thoughts):**
 
     ```mermaid
     graph TD
-        A[Histórico Enriquecido] --> B(Agente Cauteloso);
+        A[Histórico com Contexto] --> B(Agente Cauteloso);
         A --> C(Agente Inquisitivo);
         B -- Relatório Literal (JSON) --> D(Agente Gerente de Validação);
         C -- Relatório Inferencial (JSON) --> D;
@@ -103,51 +107,68 @@ graph TD
         D -- Relatório Consolidado (JSON) --> F[Output: Dados Extraídos];
     ```
 
-      - **Agente Cauteloso:** Extrai apenas dados explícitos. Se não está escrito, o campo fica nulo.
-      - **Agente Inquisitivo:** Faz inferências lógicas para preencher os dados (ex: se o cliente diz "fechado", o status é "Acordo Fechado").
-      - **Agente Gerente:** Recebe os dois relatórios, compara com o histórico original, resolve conflitos e produz o relatório final.
+      - **Agente Cauteloso:** Extrai apenas dados explícitos.
+      - **Agente Inquisitivo:** Faz inferências lógicas para preencher dados.
+      - **Agente Gerente:** Recebe os dois relatórios, compara com o histórico, resolve conflitos (especialmente com datas relativas) e produz o relatório final.
 
   - **Departamento de Análise de Temperatura:**
 
+      - **Agente Lexical:** Foca em palavras, emojis e pontuação.
+      - **Agente Comportamental:** Foca em padrões como frequência e uso de caixa alta.
+      - **Agente Gerente de Sentimento:** Consolida as duas análises para determinar a "temperatura final" e a "tendência".
+
+**Fase 3: Supervisão e Diretoria**
+
+  - **Agente de Guarda (Auditor):** Um agente meta que valida se a estrutura do JSON da extração está em conformidade com o schema esperado, garantindo a qualidade dos dados.
+  - **Agente Diretor (WhatsApp):** Recebe os relatórios validados e, seguindo uma árvore de decisão estrita, determina a próxima ação. Ele pode acionar ferramentas como `criar_atividade_no_pipedrive` ou `AlertarSupervisor`.
+
+### Fluxo do Departamento de E-mail
+
+**Estratégia Principal:** *Adversarial* para extração de dados, garantindo máxima precisão através de um ciclo de geração, crítica e refinamento.
+
+**Fase 1: Contexto e Preparação**
+
+  - **Departamento de Contexto:** A lógica é invertida. O agente "Minerador" primeiro extrai o número do processo do assunto do e-mail para buscar o Deal no Pipedrive, e só então busca a Pessoa associada, garantindo maior precisão. O "Sintetizador" formata os dados para o histórico.
+  - **Limpeza de HTML:** O corpo dos e-mails é pré-processado para remover tags HTML e extrair o texto puro, facilitando a análise.
+
+**Fase 2: Extração e Temperatura (Execução Paralela)**
+
+  - **Departamento de Extração de Dados (Estratégia Adversarial):**
+
     ```mermaid
     graph TD
-        A[Histórico Original] --> B(Agente Lexical);
-        A --> C(Agente Comportamental);
-        B -- Análise das Palavras (JSON) --> D(Agente Gerente de Sentimento);
-        C -- Análise dos Padrões (JSON) --> D;
-        D -- Relatório Consolidado de Temperatura (JSON) --> F[Output: Análise de Temperatura];
+        A[Histórico com Contexto] --> B(Agente Gerador - Legal/Financeiro);
+        B -- Extração Inicial (JSON) --> C(Agente Validador - Auditor);
+        A --> C;
+        B --> D(Agente Refinador - Juiz);
+        C -- Crítica Detalhada (JSON) --> D;
+        A --> D;
+        D -- Extração Final e Corrigida (JSON) --> F[Output: Dados Extraídos];
     ```
 
-      - **Agente Lexical:** Foca nas palavras, emojis e pontuação para determinar o sentimento.
-      - **Agente Comportamental:** Foca nos padrões: frequência, uso de caixa alta, velocidade das respostas.
-      - **Agente Gerente de Sentimento:** Consolida as duas análises para determinar a "temperatura final" e a "tendência" (se a conversa está melhorando ou piorando).
+      - **Agente Gerador (Legal/Financeiro):** Realiza a extração inicial dos dados da negociação.
+      - **Agente Validador (Auditor):** Recebe a extração inicial e a critica rigorosamente em busca de erros, omissões ou má interpretação.
+      - **Agente Refinador (Juiz):** Recebe a extração inicial e a crítica do auditor para produzir a versão final e definitiva do JSON.
+      - **Agentes Especialistas Adicionais:** Agentes focados no assunto do e-mail e no estágio da negociação rodam em paralelo para enriquecer o relatório final.
 
-**Fase 3. Departamentos de Supervisão e Diretoria (Execução Sequencial)**
+  - **Departamento de Análise de Temperatura:**
 
-**Objetivo:** Garantir a conformidade dos dados e tomar a decisão estratégica final.
+      - **Agente Comportamental (E-mail):** Este agente analisa os *metadados* da thread (importância, latência de resposta, anexos) para inferir o comportamento e o engajamento.
 
-```mermaid
-graph TD
-    A[Relatório de Dados Extraídos] --> B(Agente de Guarda - Auditor);
-    B -- Validação de Formato --> C(Agente Diretor);
-    D[Relatório de Temperatura] --> C;
-    C -- Decisão Estratégica ou Chamada de Ferramenta --> F[Output: Decisão Final];
-```
+**Fase 3: Análise Estratégica e Diretoria**
 
-  - **Agente de Guarda (Auditor):** Um agente meta que não avalia o conteúdo, mas sim se a estrutura do JSON do departamento de extração está em conformidade com o schema esperado, garantindo a qualidade dos dados.
-  - **Agente Diretor:** Recebe os relatórios validados e, seguindo uma árvore de decisão, determina a próxima ação. Ele pode tomar uma decisão estratégica (ex: "Aguardar retorno do cliente") ou acionar uma ferramenta para ações práticas, como criar uma atividade no Pipedrive ou alertar um supervisor humano.
+  - **Agente Conselheiro Judicial:** Um agente especializado que recebe todos os dados (extração, temperatura, KPIs, contexto) e fornece uma recomendação jurídica sobre a próxima ação, estimando probabilidade de sucesso e custos.
+  - **Agente Sumarizador Formal:** Cria um resumo formal e estruturado da negociação, ideal para ser salvo como nota no CRM.
+  - **Agente Diretor (E-mail):** Recebe todos os relatórios consolidados e, seguindo uma árvore de decisão complexa, pode acionar múltiplas ferramentas, como `AgendarFollowUp` e `AlertarSupervisorParaAtualizacao`, garantindo que tanto a negociação quanto os dados no CRM avancem.
 
 -----
 
 ## Dashboard de Análises
 
-O projeto inclui um dashboard interativo construído com Streamlit, que fornece uma visão aprofundada das análises geradas. Ele se conecta diretamente ao banco de dados PostgreSQL e oferece múltiplas abas para diferentes tipos de análise.
+O projeto inclui dashboards interativos construídos com Streamlit, que fornecem uma visão aprofundada das análises geradas. Eles se conectam diretamente ao banco de dados PostgreSQL e oferecem múltiplas abas para diferentes tipos de análise, com uma URL para cada departamento:
 
-  - **Visão Geral:** Métricas principais como total de análises, taxa de sucesso, distribuição de status e volume de análises ao longo do tempo.
-  - **Análise Financeira:** Indicadores como valor total original, valor acordado, descontos concedidos e taxa de recuperação. Inclui gráficos de dispersão e histogramas para visualizar a relação entre valores e descontos.
-  - **Performance Operacional:** Gráficos sobre as próximas ações sugeridas pelo Agente Diretor e a tendência (melhorando, piorando, estável) das conversas.
-  - **Insights do Cliente:** Análise de frequência dos "pontos-chave" mencionados pelos clientes, permitindo identificar os principais motivos de contato e objeções.
-  - **Analytics Avançado:** Modelos estatísticos como regressão linear para correlacionar valor da negociação com percentual de desconto, e clusterização K-Means para segmentar negociações em diferentes perfis.
+  - **Dashboard de WhatsApp:** Focado em métricas de performance, KPIs financeiros e operacionais, e insights extraídos das conversas de texto e áudio.
+  - **Dashboard de E-mail:** Focado em análises de funil, tempo de resolução, modelagem estatística (Logit, Curva de Sobrevivência) e visualizações de rede de participantes.
 
 -----
 
@@ -168,16 +189,7 @@ cd VigIA
 cp .env.example .env
 ```
 
-Agora, **edite o arquivo `.env`** e preencha todas as variáveis necessárias:
-
-  - `POSTGRES_*`: Credenciais para o banco de dados.
-  - `DATABASE_URL`: A URL de conexão completa, no formato `postgresql+psycopg2://USER:PASSWORD@HOST:PORT/DB`. Para o Docker Compose, o host será `postgres`.
-  - `REDIS_HOST`: Para o Docker Compose, use `redis`.
-  - `CELERY_*_URL`: As URLs para o broker e backend do Celery, usando o host do Redis. Ex: `redis://redis:6379/0`.
-  - `LLM_PROVIDER`: Escolha entre `gemini` ou `ollama`.
-  - `GEMINI_API_KEY`: Sua chave de API, se estiver usando o Gemini.
-  - `EVOLUTION_*`: As credenciais da sua instância da Evolution API.
-  - `PIPEDRIVE_*`: Suas credenciais da API do Pipedrive.
+Agora, **edite o arquivo `.env`** e preencha todas as variáveis necessárias.
 
 ### 2\. Executando a Aplicação
 
@@ -198,37 +210,39 @@ docker-compose logs -f api worker
 ### 3\. Acessando os Serviços
 
   - **API:** `http://localhost:8026`
-  - **Dashboard:** `http://localhost:8501`
+  - **Dashboard WhatsApp:** `http://localhost:8501`
+  - **Dashboard E-mail:** `http://localhost:8502`
 
 ### 4\. Ingestão e Análise de Dados
 
-  - **Webhook:** Configure sua Evolution API para enviar webhooks de novas mensagens para `http://<SEU_IP>:8026/webhook/evolution`.
-  - **Importação Histórica:** Para analisar conversas passadas, execute o script de importação:
+  - **Webhook:** Configure sua Evolution API (WhatsApp) ou Microsoft Graph API (E-mail) para enviar webhooks para os endpoints correspondentes em `http://<SEU_IP>:8026/webhook/...`.
+  - **Importação Histórica (WhatsApp):** Para analisar conversas passadas, execute o script de importação:
     ```bash
-    docker-compose exec api python -m scripts.historical_importer
+    docker-compose exec api python -m vigia.departments.negotiation_whatsapp.scripts.historical_importer
     ```
-  - **Reanálise em Lote:** Para reanalisar conversas já existentes no banco (útil após uma melhoria nos prompts), use os scripts de análise:
+  - **Reanálise em Lote:** Para reanalisar conversas já existentes no banco (útil após uma melhoria nos prompts), use os scripts de análise de cada departamento:
     ```bash
-    # Analisa uma conversa específica
-    docker-compose exec api python -m scripts.reanalyze_conversation --conversa <REMOTE_JID_DA_CONVERSA> --salvar
+    # Reanalisa uma conversa específica do WhatsApp
+    docker-compose exec api python -m vigia.departments.negotiation_whatsapp.scripts.reanalyze_conversation --conversa <REMOTE_JID_DA_CONVERSA> --salvar
 
-    # Analisa as 10 conversas mais longas
-    docker-compose exec api python -m scripts.batch_analyzer --limit 10 --strategy longest
+    # Reanalisa uma thread de e-mail específica
+    docker-compose exec api python -m vigia.departments.negotiation_email.scripts.reanalyze_thread --thread <CONVERSATION_ID_DA_THREAD> --salvar
     ```
 
 -----
 
 ## Tecnologias Utilizadas
 
-| Tecnologia      | Papel no Projeto                                        |
-| :-------------- | :------------------------------------------------------ |
-| **Python** | Linguagem principal de desenvolvimento.                 |
-| **FastAPI** | Framework web assíncrono para a API de ingestão.        |
+| Tecnologia | Papel no Projeto |
+| :--- | :--- |
+| **Python** | Linguagem principal de desenvolvimento. |
+| **FastAPI** | Framework web assíncrono para a API de ingestão. |
 | **Celery** | Sistema de filas distribuídas para processamento assíncrono. |
-| **PostgreSQL** | Banco de dados relacional para persistência dos dados.  |
-| **Redis** | Message broker para o Celery e cache.                   |
-| **Docker** | Plataforma de containerização para ambiente e deploy.   |
+| **PostgreSQL** | Banco de dados relacional para persistência dos dados. |
+| **Redis** | Message broker para o Celery e cache. |
+| **Docker** | Plataforma de containerização para ambiente e deploy. |
 | **Alembic** | Ferramenta para gerenciamento de migrações de schema do DB. |
-| **Streamlit** | Framework para criação do Dashboard de Análises.        |
-| **Ollama/Gemini**| Provedores de Large Language Models (LLMs) para a IA.    |
-| **Pydantic** | Validação de dados e gerenciamento de configurações.    |
+| **Streamlit** | Framework para criação dos Dashboards de Análises. |
+| **Ollama/Gemini**| Provedores de Large Language Models (LLMs) para a IA. |
+| **Pydantic** | Validação de dados e gerenciamento de configurações. |
+| **Whisper** | Modelo de IA para transcrição de áudio de alta precisão. |
