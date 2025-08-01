@@ -90,7 +90,7 @@ O processamento dentro do worker é dividido em departamentos que operam com est
 
 **Fase 1: Pré-processamento e Contexto**
 
-  - **Transcrição de Áudio:** O histórico da conversa é analisado. Segmentos de áudio (`[ÁUDIO...]`) são identificados e transcritos usando um agente especializado com o modelo Whisper. O texto transcrito substitui a tag de áudio no histórico.
+  - **Transcrição de Áudio:** O histórico da conversa é analisado. Segmentos de áudio (`[ÁUDIO...]`) são identificados e transcritos usando o OpenAI Whisper. O texto transcrito substitui a tag de áudio no histórico.
   - **Departamento de Contexto (Estratégia GAN):** Um agente "Minerador" busca dados no Pipedrive a partir do telefone. Um agente "Sintetizador" formata esses dados em um resumo textual claro que é pré-anexado ao histórico.
 
 **Fase 2: Extração e Temperatura (Execução Paralela)**
