@@ -1,4 +1,13 @@
 # Projeto VigIA: Agente Supervisor de IA
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi&logoColor=white)
+![Celery](https://img.shields.io/badge/Celery-37814A?style=for-the-badge&logo=celery&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/redis-%23DD0031.svg?&style=for-the-badge&logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
+![Google Gemini](https://img.shields.io/badge/Google%20Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white)
 
 > **VigIA** é um sistema autônomo de IA projetado para atuar como um supervisor em conversas de negociação. Utilizando uma arquitetura multiagente e polimórfica, ele se integra a plataformas de comunicação como WhatsApp e E-mail para analisar, extrair dados, avaliar o sentimento e tomar decisões estratégicas sobre o andamento das negociações em tempo real.
 
@@ -90,7 +99,7 @@ O processamento dentro do worker é dividido em departamentos que operam com est
 
 **Fase 1: Pré-processamento e Contexto**
 
-  - **Transcrição de Áudio:** O histórico da conversa é analisado. Segmentos de áudio (`[ÁUDIO...]`) são identificados e transcritos usando o OpenAI Whisper. O texto transcrito substitui a tag de áudio no histórico.
+  - **Transcrição de Áudio:** O histórico da conversa é analisado. Segmentos de áudio (`[ÁUDIO...]`) são identificados e transcritos usando um agente especializado para lidar com as trancrições geradas pelo modelo Whisper. O texto transcrito substitui a tag de áudio no histórico.
   - **Departamento de Contexto (Estratégia GAN):** Um agente "Minerador" busca dados no Pipedrive a partir do telefone. Um agente "Sintetizador" formata esses dados em um resumo textual claro que é pré-anexado ao histórico.
 
 **Fase 2: Extração e Temperatura (Execução Paralela)**
