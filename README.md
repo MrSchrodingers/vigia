@@ -40,45 +40,41 @@ O VigIA emula uma estrutura organizacional para decompor a complexa tarefa de an
 O sistema é construído sobre uma arquitetura de microsserviços containerizada e orientada a eventos, garantindo escalabilidade, resiliência e desacoplamento.
 
 ```mermaid
-graph TD
-    subgraph "Fontes de Comunicação"
-        A[Evolution API - WhatsApp]
-        I[Microsoft Graph API - E-mail]
-    end
+flowchart LR
+  %% --- Fontes de comunicação ---
+  subgraph Fontes_Comunicacao
+    WA[Evolution API – WhatsApp]
+    EM[Microsoft Graph API – E-mail]
+  end
 
-    subgraph "Infraestrutura Externa"
-        G[Pipedrive CRM]
-    end
+  %% --- Infra externa ---
+  subgraph Infra_Externa
+    CRM[Pipedrive CRM]
+  end
 
-    subgraph "Infraestrutura VigIA (Docker Compose)"
-        B(FastAPI - API de Ingestão)
-        C(Redis - Cache & Message Broker)
-        D(Celery - Worker de Análise)
-        E(PostgreSQL - Banco de Dados)
-        H_WHATS(Streamlit - Dashboard WhatsApp)
-        H_EMAIL(Streamlit - Dashboard E-mail)
+  %% --- Núcleo VigIA ---
+  subgraph VigIA
+    ING[FastAPI – API de Ingestão]
+    Q[Redis – Fila/Cache]
+    WK[Celery – Worker]
+    DB[(PostgreSQL)]
+    DASH_WA[Streamlit – Dash WhatsApp]
+    DASH_EM[Streamlit – Dash E-mail]
 
-        subgraph "Processamento Assíncrono"
-            direction LR
-            D -- Roteia para Depto. --> D
-            D -- Busca Histórico --> E
-            D -- Busca Contexto --> G
-            D -- Chama LLMs --> F{Provedores de LLM}
-            D -- Salva Análise --> E
-        end
-        
-        H_WHATS -- Lê Análises --> E
-        H_EMAIL -- Lê Análises --> E
-    end
+    %% pipeline assíncrono (sem loops!)
+    WK -->|Busca histórico| DB
+    WK -->|Busca contexto| CRM
+    WK -->|Chama LLMs| LLM{Ollama / Gemini}
+    WK -->|Salva análise| DB
+  end
 
-    subgraph "Provedores de IA"
-        F[Ollama / Gemini]
-    end
-
-    A -- Webhook --> B
-    I -- Webhook --> B
-    B -- Enfileira Tarefa --> C
-    D -- Consome Tarefa --> C
+  %% --- Conexões globais ---
+  WA -->|Webhook| ING
+  EM -->|Webhook| ING
+  ING -->|Enfileira| Q
+  Q -->|Entrega tarefa| WK
+  DASH_WA -->|Lê análises| DB
+  DASH_EM -->|Lê análises| DB
 ````
 
   - **API de Ingestão (`FastAPI`):** Um endpoint leve que recebe webhooks de múltiplas fontes (WhatsApp, E-mail), adiciona uma tag de `source` ao payload e enfileira a tarefa no Redis para processamento assíncrono.
@@ -107,13 +103,13 @@ O processamento dentro do worker é dividido em departamentos que operam com est
   - **Departamento de Extração de Dados (Tree of Thoughts):**
 
     ```mermaid
-    graph TD
-        A[Histórico com Contexto] --> B(Agente Cauteloso);
-        A --> C(Agente Inquisitivo);
-        B -- Relatório Literal (JSON) --> D(Agente Gerente de Validação);
-        C -- Relatório Inferencial (JSON) --> D;
-        A --> D;
-        D -- Relatório Consolidado (JSON) --> F[Output: Dados Extraídos];
+      flowchart TD
+        H[Histórico + Contexto] --> CA(Agente Cauteloso)
+        H --> INQ(Agente Inquisitivo)
+        CA -->|Relatório literal| GER(Agente Gerente)
+        INQ -->|Relatório inferencial| GER
+        H --> GER
+        GER -->|JSON final| OUT[Dados Extraídos]
     ```
 
       - **Agente Cauteloso:** Extrai apenas dados explícitos.
@@ -145,14 +141,13 @@ O processamento dentro do worker é dividido em departamentos que operam com est
   - **Departamento de Extração de Dados (Estratégia Adversarial):**
 
     ```mermaid
-    graph TD
-        A[Histórico com Contexto] --> B(Agente Gerador - Legal/Financeiro);
-        B -- Extração Inicial (JSON) --> C(Agente Validador - Auditor);
-        A --> C;
-        B --> D(Agente Refinador - Juiz);
-        C -- Crítica Detalhada (JSON) --> D;
-        A --> D;
-        D -- Extração Final e Corrigida (JSON) --> F[Output: Dados Extraídos];
+      flowchart TD
+        H[Histórico + Contexto] --> GEN(Agente Gerador)
+        GEN -->|Inicial| AUD(Agente Validador)
+        AUD -->|Crítica| REF(Agente Refinador)
+        GEN --> REF
+        H --> AUD & REF
+        REF -->|JSON final| OUT[Dados Extraídos]
     ```
 
       - **Agente Gerador (Legal/Financeiro):** Realiza a extração inicial dos dados da negociação.
