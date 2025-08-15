@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, func, ForeignKey, Text, JSON, Boolean
+from sqlalchemy import Column, String, DateTime, func, ForeignKey, Text, JSON, Boolean, Float
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
@@ -105,3 +105,28 @@ class Analysis(Base):
     __mapper_args__ = {
         'polymorphic_on': analysable_type
     }
+    
+class JudicialAnalysis(Base):
+    """
+    Armazena o resultado da análise estratégica do "Júri de IAs".
+    Cada registro representa uma decisão ponderada sobre uma negociação específica,
+    servindo como um valioso registro para auditoria e futuro treinamento de modelos.
+    """
+    __tablename__ = 'judicial_analyses'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey('email_threads.id'), nullable=False, default=as_std_uuid)
+    
+    # O veredito final do agente Juiz
+    recommended_action = Column(JSON, nullable=False)
+    # A justificativa detalhada para a decisão tomada
+    legal_rationale = Column(Text, nullable=False)
+    # As teses completas dos agentes "advogados" para rastreabilidade
+    conservative_thesis = Column(JSON, nullable=True)
+    strategic_thesis = Column(JSON, nullable=True)
+    # A confiança do Juiz em sua própria decisão
+    confidence_score = Column(Float, nullable=True)
+    # Timestamp da análise
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Relacionamento para fácil acesso à thread a partir da análise
+    thread = relationship("EmailThread")

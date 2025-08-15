@@ -9,7 +9,8 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 celery_app = Celery(
     "vigia_worker",
     broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND
+    backend=settings.CELERY_RESULT_BACKEND,
+    include=["vigia.tasks.jusbr_tasks"],
 )
 celery_app.conf.update(task_track_started=True)
 

@@ -10,15 +10,20 @@ from .extraction_specialist_agents import (
 )
 from .extraction_adversarial_agents import ExtractionValidatorAgent, ExtractionRefinerAgent
 
-# --- Manager e Diretor (ficam em módulos separados) ---
+# --- Manager e Diretor ---
 from .extraction_manager_agent import EmailManagerAgent
 from .director_agent import EmailDirectorAgent
 
-# --- Judicial ---
-from .judicial_negotiation_advisor_agent import JudicialNegotiationAdvisorAgent
-
 # --- Sumarizador ---
 from .formal_summarizer_agent import FormalSummarizerAgent
+
+# --- Juri ---
+from .legal_context_agent import LegalContextSynthesizerAgent
+from ..agents.judicial_jury_agents import (
+    ConservativeAdvocateAgent,
+    StrategicAdvocateAgent,
+    JudicialArbiterAgent
+)
 
 # --- Instâncias dos Agentes de Contexto ---
 context_miner_agent = EmailDataMinerAgent()
@@ -38,11 +43,14 @@ temperature_behavioral_agent = EmailBehavioralAgent()
 # --- Instância do Agente Diretor ---
 director_agent = EmailDirectorAgent()
 
-# --- Instância do Agente Judicial ---
-judicial_negotiation_advisor_agent = JudicialNegotiationAdvisorAgent()
-
 # --- Instância do Agente Sumarizador ---
 formal_summarizer_agent = FormalSummarizerAgent()
+
+# --- Instância do Juri ---
+legal_context_synthesizer_agent = LegalContextSynthesizerAgent()
+conservative_advocate_agent = ConservativeAdvocateAgent()
+strategic_advocate_agent = StrategicAdvocateAgent()
+judicial_arbiter_agent = JudicialArbiterAgent()
 
 __all__ = [
     "context_miner_agent",
@@ -53,8 +61,11 @@ __all__ = [
     "extraction_manager_agent",
     "temperature_behavioral_agent",
     "director_agent",
-    "judicial_negotiation_advisor_agent",
     "formal_summarizer_agent",
     "validator_agent ",
     "refiner_agent ",
+    "legal_context_synthesizer_agent",
+    "conservative_advocate_agent",
+    "strategic_advocate_agent",
+    "judicial_arbiter_agent",
 ]

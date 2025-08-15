@@ -26,7 +26,6 @@ class SubjectDataExtractorAgent(BaseLLMAgent):
         `{"numero_processo": "string_20_digitos | null", "nome_parte": "string | null"}`
         """
         
-        # Exemplos abrangentes para ensinar o modelo a lidar com a variabilidade.
         few_shot = '''
         Input: "PROPOSTA DE ACORDO: 0003122-49.2025.8.16.0058 - PARTE: ALBERTO BARRADAS MARQUES - GRUPO BRADESCO."
         Output: {"numero_processo": "00031224920258160058", "nome_parte": "ALBERTO BARRADAS MARQUES"}
@@ -43,7 +42,7 @@ class SubjectDataExtractorAgent(BaseLLMAgent):
         Input: "RES: Proposta de Acordo AUTOS Nº 5011350-60.2025.8.24.0039"
         Output: {"numero_processo": "50113506020258240039", "nome_parte": null}
         '''
-        super().__init__(specific_prompt, few_shot)
+        super().__init__(specific_prompt, few_shot, expects_json=True)
 
     async def execute(self, subject: str) -> str:
         return await self._llm_call(subject)
@@ -74,7 +73,7 @@ class LegalFinancialSpecialistAgent(BaseLLMAgent):
           "status_acordo": "string | null"
         }
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, email_body: str) -> str:
         return await self._llm_call(email_body)
@@ -90,7 +89,7 @@ class NegotiationStageSpecialistAgent(BaseLLMAgent):
         ["Colaborativo","Neutro","Hostil","Urgente"].
         Retorne {"estagio_negociacao": str, "tom_da_conversa": str}.
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, email_body: str) -> str:
         return await self._llm_call(email_body)
@@ -110,7 +109,7 @@ class EmailBehavioralAgent(BaseLLMAgent):
         • reply_latency_sec<3600 → +3 engajamento
         Normalize p/ faixa 0-10 (cap).
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, metadata_json: dict[str, any]) -> str:
         return await self._llm_call(json.dumps(metadata_json, ensure_ascii=False, indent=2))

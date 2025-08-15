@@ -10,7 +10,7 @@ class EmailManagerAgent(BaseLLMAgent):
         • Ordem de saída: assunto ▸ proposta ▸ estágio ▸ argumentos ▸ status.
         Retorne apenas o JSON consolidado.
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, *reports: str) -> str:
         joined = "\n\n---\n\n".join(reports)
@@ -26,7 +26,7 @@ class EmailDirectorAgent(BaseLLMAgent):
         • Se nenhuma ação prática necessária → devolva {"resumo_estrategico": str}.
         • Caso contrário → {"acao":{"nome_ferramenta": str,"parametros":{...}}}.
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, extraction_report: str, temperature_report: str,
                       conversation_id: str) -> str:

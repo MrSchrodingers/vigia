@@ -25,7 +25,7 @@ class ExtractionValidatorAgent(BaseLLMAgent):
         **Exemplo de Crítica:**
         `{"is_valid": false, "critique": "Erro de atribuição. A proposta de R$ 4.200,00 foi feita por 'nosso lado', mas foi listada em 'argumentos_cliente'.", "suggested_correction": "Mover a proposta de R$ 4.200,00 de 'argumentos_cliente' para 'argumentos_nossos'."}`
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, email_body: str, json_extraction: str) -> str:
         context = f"""
@@ -66,7 +66,7 @@ class ExtractionRefinerAgent(BaseLLMAgent):
 
         **IMPORTANTE:** Sua saída deve ser **SEMPRE** o objeto JSON final e completo, seguindo a estrutura de dados original, e nada mais. Não inclua explicações, apenas o JSON.
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, email_body: str, initial_extraction: str, validation_report: str) -> str:
         context = f"""

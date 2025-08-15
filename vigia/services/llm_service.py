@@ -37,7 +37,10 @@ def _clean_llm_response(response_text: str) -> str:
 async def llm_call(
     system_prompt: str,
     user_prompt: str,
-    use_tools: bool = False
+    use_tools: bool = False,
+    *,
+    expects_json: bool = False,
+    json_schema: dict | None = None
 ) -> str | dict:
     """
     Função AGNÓSTICA e ASSÍNCRONA que chama o provedor de LLM.
@@ -54,7 +57,8 @@ async def llm_call(
 
     if settings.LLM_PROVIDER == "gemini":
         raw_response = await _call_gemini_async(
-            system_prompt, user_prompt, use_tools, available_tools
+            system_prompt, user_prompt, use_tools, available_tools,
+            expects_json=expects_json, json_schema=json_schema
         )
     elif settings.LLM_PROVIDER == "ollama":
         raw_response = await _call_ollama_async(system_prompt, user_prompt)
@@ -75,7 +79,10 @@ async def _call_gemini_async(
     system_prompt: str,
     user_prompt: str,
     use_tools: bool,
-    available_tools: dict
+    available_tools: dict,
+    *,
+    expects_json: bool = False,
+    json_schema: dict | None = None
 ) -> str | dict:
     """Versão assíncrona para chamar o Gemini, com suporte a ferramentas e rate limiting."""
     now = time.monotonic()
@@ -96,12 +103,19 @@ async def _call_gemini_async(
 
     try:
         model_name = "gemini-2.5-flash"
+        generation_config = {}
+        if expects_json:
+            generation_config["response_mime_type"] = "application/json"
+            if json_schema:
+                generation_config["response_schema"] = json_schema
+
         model = genai.GenerativeModel(
             model_name=model_name,
             system_instruction=system_prompt,
-            tools=list(available_tools.values()) if use_tools else None
+            tools=list(available_tools.values()) if use_tools else None,
+            generation_config=generation_config
         )
-        
+
         response = await model.generate_content_async(
             user_prompt,
             tool_config={"function_calling_config": "ANY"} if use_tools else None

@@ -19,8 +19,3 @@ class EmailBehavioralAgent:
     async def execute(self, metadata_json: Dict[str, Any]) -> str:
         metadata_str = json.dumps(metadata_json, indent=2)
         return await llm_service.llm_call(self.system_prompt, metadata_str)
-
-# NOTA: Para os agentes LexicalSentimentAgent e SentimentManagerAgent,
-# você pode importá-los de um local compartilhado se forem genéricos, ou
-# recriá-los aqui se tiverem especificidades para e-mail.
-# Exemplo: from vigia.agents.shared import LexicalSentimentAgent, SentimentManagerAgent

@@ -1,75 +1,128 @@
-from pydantic import field_validator
+from __future__ import annotations
+
+import ast
+from typing import Any, List
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Any
+
+
+def _parse_list(value: Any) -> List[str]:
+    """
+    Aceita:
+      • string “a,b,c”
+      • string '["a","b"]'
+      • lista real
+    Retorna sempre list[str] sem espaços nem vazios.
+    """
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    if isinstance(value, str) and value:
+        value = value.strip()
+        try:                      # tenta JSON / Python-list first
+            parsed = ast.literal_eval(value)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except (ValueError, SyntaxError):
+            pass
+        # fallback “a,b,c”
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    return []
+
 
 class Settings(BaseSettings):
     """
-    Configurações centralizadas para a aplicação VigIA.
-    Lê variáveis de um arquivo .env e do ambiente do sistema.
+    Configurações globais da aplicação VigIA.
+    Carrega variáveis do sistema + arquivo `.env`.
     """
-    # Configuração do Pydantic
+
+    # ───── Config interna do Pydantic ─────────────────────────
     model_config = SettingsConfigDict(
-        env_file='.env', 
-        env_file_encoding='utf-8', 
-        extra='ignore'
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,      # ← imutável depois de criada
     )
 
-    # App
-    ENVIRONMENT: str = "development"
-    LOG_LEVEL: str = "INFO"
-    
-    # Banco de Dados
+    # ───────────────────── App / Runtime ──────────────────────
+    ENVIRONMENT: str = Field(default="development")
+    LOG_LEVEL: str = Field(default="INFO")
+
+    # UID/GID opcionais (usados no docker-compose para mapear volumes)
+    UID: int | None = None
+    GID: int | None = None
+
+    # ─────────── Banco de Dados (PostgreSQL) ────────────
     DATABASE_URL: str
 
-    # --- Serviços de LLM ---
-    LLM_PROVIDER: str = "gemini"
-    GEMINI_API_KEY: str = ""
-    OLLAMA_API_URL: str = "http://host.docker.internal:11434"
-    OLLAMA_MODEL: str = "llama3"
-    
-    # --- WhatsApp (Evolution API) ---
-    EVOLUTION_BASE_URL: str
-    INSTANCE_NAME: str
-    API_KEY: str
-    
-    # --- CRM (Pipedrive) ---
-    PIPEDRIVE_API_TOKEN_WHATSAPP: str = ""
-    PIPEDRIVE_API_TOKEN_EMAIL: str = ""
-    PIPEDRIVE_DOMAIN: str = ""
-    
-    # --- E-mail (Microsoft Graph API) ---
-    GRAPH_BASE_URL: str = "https://graph.microsoft.com/v1.0"
-    TENANT_ID: str = ""
-    CLIENT_ID: str = ""
-    CLIENT_SECRET: str = ""
-    
-    # Campos que precisam ser convertidos de string para lista
-    EMAIL_ACCOUNTS: List[str] = []
-    SUBJECT_FILTER: List[str] = []
-    IGNORED_RECIPIENT_PATTERNS: List[str] = []
-    
-    SENT_FOLDER_NAME: str = "Itens Enviados"
-    IGNORE_SUBJECT_PREFIXES: str = "RES:,ENC:,FWD:,FW:"
-    
-    # --- Background Jobs (Redis & Celery) ---
+    # ───────────── Redis / Celery ──────────────
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
 
-    @field_validator('EMAIL_ACCOUNTS', 'SUBJECT_FILTER', 'IGNORED_RECIPIENT_PATTERNS', mode='before')
+    # ────────────── PJe Office (headless) ───────────────
+    PJE_PFX_PASS: str
+
+    # ────────────── Jus.br PDPJ ───────────────
+    JUSBR_API_BASE_URL: str
+    JUSBR_CLIENT_ID: str
+    JUSBR_REDIRECT_URI: str
+    JUSBR_AUTH_TOKEN_EXPIRATION_SECONDS: int = 3000  # 50 min
+
+    # ───────────── LLM Providers ──────────────
+    LLM_PROVIDER: str = "gemini"
+    GEMINI_API_KEY: str | None = None
+    OLLAMA_API_URL: str | None = None
+    OLLAMA_MODEL: str | None = None
+
+    # ───────── Evolution / WhatsApp ───────────
+    EVOLUTION_BASE_URL: str
+    INSTANCE_NAME: str
+    API_KEY: str
+
+    # ────────────── CRM (Pipedrive) ───────────
+    PIPEDRIVE_DOMAIN: str
+    PIPEDRIVE_API_TOKEN_WHATSAPP: str
+    PIPEDRIVE_API_TOKEN_EMAIL: str
+
+    # ────────────── Graph / Email ─────────────
+    GRAPH_BASE_URL: str = "https://graph.microsoft.com/v1.0"
+    TENANT_ID: str
+    CLIENT_ID: str
+    CLIENT_SECRET: str
+
+    SENT_FOLDER_NAME: str = "itens enviados"
+    IGNORE_SUBJECT_PREFIXES: str = "RES:,ENC:,FWD:,FW:"
+
+    EMAIL_ACCOUNTS: List[str] = Field(default_factory=list)
+    SUBJECT_FILTER: List[str] = Field(default_factory=list)
+    IGNORED_RECIPIENT_PATTERNS: List[str] = Field(default_factory=list)
+
+    # ────────────── Validadores custom ─────────────
+    @field_validator(
+        "EMAIL_ACCOUNTS",
+        "SUBJECT_FILTER",
+        "IGNORED_RECIPIENT_PATTERNS",
+        mode="before",
+    )
     @classmethod
-    def _split_str_to_list(cls, v: Any) -> List[str]:
+    def _to_list(cls, v: Any) -> List[str]:
+        return _parse_list(v)
+
+    @field_validator("REDIS_PORT", "REDIS_DB", mode="before")
+    @classmethod
+    def _to_int(cls, v: Any) -> int:
         """
-        Validador que converte uma string separada por vírgulas,
-        recebida do arquivo .env, em uma lista de strings.
-        Isso é executado ANTES da validação padrão do Pydantic, evitando o erro de JSON.
+        Permite que portas / DB venham como string, converte para int.
         """
-        if isinstance(v, str) and v:
-            return [item.strip() for item in v.split(',') if item.strip()]
-        if isinstance(v, list):
+        if isinstance(v, int):
             return v
-        return []
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+        raise ValueError("deve ser número inteiro")
 
 settings = Settings()

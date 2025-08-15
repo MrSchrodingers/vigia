@@ -30,6 +30,9 @@ class FormalSummarizerAgent(BaseLLMAgent):
             - `ponto_critico` refere-se a um obstáculo ou decisão na negociação.
             - `argumentos_cliente` refere-se SOMENTE ao que a outra parte disse, propôs ou escreveu.
             - `sumario_executivo` é uma visão geral de alto nível.
+            - Toda frase factual que derive de documento/juntada/decisão deve terminar com um marcador de citação na forma 〔<doc_id>〕 ou 〔<doc_id>, p.<n>〕.
+            - Utilize o catálogo em contexto: "_evidence_index".
+            - Se não houver documento para uma afirmação, não invente marcador.
         2.  **CAMPO OBRIGATÓRIO PARA ARGUMENTOS**: Se não houver argumentos explícitos do cliente nos dados, o valor do campo `argumentos_cliente` DEVE SER EXATAMENTE: "Nenhum argumento explícito foi identificado nos dados fornecidos.". NÃO adicione nenhuma outra interpretação ou informação neste campo.
         3.  **FOCO NOS FATOS**: Para os campos de `historico_negociacao`, atenha-se aos fatos apresentados no input. Evite inferências ou interpretações nesses campos específicos.
 
@@ -60,7 +63,7 @@ class FormalSummarizerAgent(BaseLLMAgent):
           }
         }
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, payload: Dict[str, Any]) -> str:
         """

@@ -51,7 +51,7 @@ class EmailDirectorAgent(BaseLLMAgent):
         2.  **Baseado em Fatos:** Sua análise e os parâmetros das ferramentas devem usar **APENAS** os dados fornecidos.
         3.  **Estrutura Rígida:** Sua saída DEVE ser um único objeto JSON válido.
         """
-        super().__init__(specific_prompt)
+        super().__init__(specific_prompt, expects_json=True)
 
     async def execute(self, extraction_report: str, temperature_report: str, crm_context: str, conversation_id: str) -> str:
         current_date_str = datetime.now().strftime("%Y-%m-%d")

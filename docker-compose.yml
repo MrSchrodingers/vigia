@@ -1,62 +1,69 @@
-# Define um bloco base de configuração para os serviços da aplicação
+# ─── bloco base DRY ──────────────────────────────────────────
 x-app-base: &app-base
   build: .
   volumes:
-    # Este volume é para desenvolvimento, pois sincroniza seu código local
-    # com o container, permitindo o --reload.
-    - .:/app
-  env_file:
-    - .env
+    - .:/app 
+  env_file: [.env]
   depends_on:
     redis:
       condition: service_healthy
     postgres:
       condition: service_healthy
 
+# ─── serviços ───────────────────────────────────────────────
 services:
-  # Serviço da API principal que recebe os webhooks
   api:
     <<: *app-base
     container_name: vigia_api
-    entrypoint: ["sh", "./docker-entrypoint.sh"]
+    volumes:
+      - ./secrets:/secrets:ro
     environment:
-      WATCHFILES_IGNORE_PATHS: ".git"
-    ports:
-      - "8026:8026"
+      ROLE: api
+    ports: ["8026:8026"]
 
-  # Serviço do Worker que processa as tarefas em background
   worker:
     <<: *app-base
     container_name: vigia_worker
-    command: python -m celery -A vigia.worker.celery_app worker --loglevel=info
+    environment:
+      ROLE: worker
 
-  # Banco de dados de Cache e Fila de Mensagens
+  pje-worker:
+    <<: *app-base
+    container_name: vigia_pje_worker
+    volumes:
+      - ./secrets:/secrets:ro
+    environment:
+      ROLE: pje-worker
+      PJE_PFX: /secrets/24853997.pfx
+      PJE_PFX_PASS: ${PJE_PFX_PASS:-}
+      PJE_HEADLESS_PORT: 8800
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8800:8800"
+
   redis:
     image: redis:7-alpine
     container_name: vigia_redis
-    ports:
-      - "6379:6379"
+    ports: ["6379:6379"]
     healthcheck:
-      # Verifica se o Redis está pronto para aceitar comandos
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Banco de dados relacional para persistência
   postgres:
     image: postgres:15-alpine
     container_name: vigia_postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB:     ${POSTGRES_DB}
+      POSTGRES_USER:   ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
+    ports: ["5432:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # Verifica se o PostgreSQL está pronto para aceitar conexões
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
@@ -67,12 +74,10 @@ services:
       context: ./vigia/departments/negotiation_whatsapp/dashboard
       dockerfile: Dockerfile
     container_name: whatsapp_vigia_dashboard
-    ports:
-      - "8501:8501"
+    ports: ["8501:8501"]
     volumes:
       - ./vigia/departments/negotiation_whatsapp/dashboard:/app
-    env_file:
-      - .env
+    env_file: [.env]
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,15 +87,14 @@ services:
       context: ./vigia/departments/negotiation_email/dashboard
       dockerfile: Dockerfile
     container_name: negotiation_email
-    ports:
-      - "8502:8502"
+    ports: ["8502:8502"]
     volumes:
       - ./vigia/departments/negotiation_email/dashboard:/app
-    env_file:
-      - .env
+    env_file: [.env]
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  chrome_profile:

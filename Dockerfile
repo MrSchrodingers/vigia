@@ -31,21 +31,43 @@
     COPY pyproject.toml poetry.lock ./
     # instalamos tudo **exceto** o grupo 'whisper'
     RUN poetry install --only main --no-root --no-interaction --no-ansi
+
+    # --- WebDriver Manager (para gerenciar o chromedriver) ---
+        RUN pip install webdriver-manager selenium-wire setuptools 
     
     # --- Whisper (CPU) -----------------------------------------------------------
     RUN pip install --no-deps openai-whisper==20250625
     
     # ---------- 2. RUNTIME -------------------------------------------------------
-    FROM python:3.12-slim
-    
-    RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
-        rm -rf /var/lib/apt/lists/*
-    
-    WORKDIR /app
-    COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-    COPY --from=builder /usr/local/bin /usr/local/bin
-    COPY ./vigia ./vigia
-    
-    EXPOSE 8026
-    CMD ["python", "-m", "uvicorn", "vigia.main_api:app", "--host", "0.0.0.0", "--port", "8026"]
-    
+    # ---------- 2. RUNTIME -------------------------------------------------------
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
+    unzip \
+    libxi6 \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY ./vigia ./vigia
+COPY ./db ./db
+COPY ./lib ./lib
+COPY ./alembic ./alembic
+COPY ./alembic.ini ./
+COPY ./docker-entrypoint.sh ./
+
+RUN chmod +x docker-entrypoint.sh
+
+EXPOSE 8800
+EXPOSE 8026
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
