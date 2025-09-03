@@ -1,9 +1,9 @@
 import logging
 import httpx
 import google.generativeai as genai
-import asyncio  
-import time     
-from collections import deque 
+import asyncio
+import time
+from collections import deque
 
 from vigia.departments.negotiation_whatsapp.core import tools as whatsapp_tools
 from vigia.departments.negotiation_email.core import tools as email_tools
@@ -19,7 +19,7 @@ if settings.LLM_PROVIDER == "gemini" and settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
 
 def _clean_llm_response(response_text: str) -> str:
-    if not isinstance(response_text, str): 
+    if not isinstance(response_text, str):
         return ""
     if response_text.strip().startswith("```json"):
         response_text = response_text.strip()[7:-3]
@@ -86,23 +86,22 @@ async def _call_gemini_async(
 ) -> str | dict:
     """Versão assíncrona para chamar o Gemini, com suporte a ferramentas e rate limiting."""
     now = time.monotonic()
-    
-    # Remove timestamps que já saíram da janela de 60 segundos
+
+    # Remove timestamps fora da janela
     while gemini_request_timestamps and now - gemini_request_timestamps[0] > GEMINI_WINDOW_SECONDS:
         gemini_request_timestamps.popleft()
-        
-    # Se o número de requisições na janela atual atingiu o limite, espera
+
+    # Limite atingido → aguarda
     if len(gemini_request_timestamps) >= GEMINI_RPM_LIMIT:
         oldest_request_time = gemini_request_timestamps[0]
         wait_time = (oldest_request_time + GEMINI_WINDOW_SECONDS) - now
         logging.warning(f"Limite de requisições do Gemini atingido. Aguardando por {wait_time:.2f} segundos.")
         await asyncio.sleep(wait_time)
-    
-    # Adiciona o timestamp da requisição atual
+
     gemini_request_timestamps.append(time.monotonic())
 
     try:
-        model_name = "gemini-2.5-flash"
+        model_name = settings.GEMINI_MODEL or "gemini-2.5-flash"
         generation_config = {}
         if expects_json:
             generation_config["response_mime_type"] = "application/json"
@@ -123,14 +122,14 @@ async def _call_gemini_async(
 
         if response.candidates and response.candidates[0].content.parts:
             part = response.candidates[0].content.parts[0]
-            if part.function_call:
+            if getattr(part, "function_call", None):
                 function_call = part.function_call
                 return {
                     "type": "function_call",
                     "name": function_call.name,
                     "args": {key: value for key, value in function_call.args.items()}
                 }
-        
+
         return response.text
     except Exception as e:
         logging.error(f"Erro na API do Gemini (async): {e}")

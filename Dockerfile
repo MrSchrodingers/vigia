@@ -11,7 +11,7 @@
     
     # --- sistema -----------------------------------------------------------------
     RUN apt-get update && \
-        apt-get install -y --no-install-recommends build-essential curl git && \
+        apt-get install -y --no-install-recommends build-essential curl git ffmpeg && \
         rm -rf /var/lib/apt/lists/*
     
     # --- wheels essenciais -------------------------------------------------------
@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     unzip \
     libxi6 \
+    ffmpeg \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \

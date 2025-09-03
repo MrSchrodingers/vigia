@@ -13,7 +13,7 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 # ──────────────────────────────────────────────────────────────
 try:
     whisper_model = whisper.load_model(
-        "base",
+        "medium",
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
 except Exception as e:

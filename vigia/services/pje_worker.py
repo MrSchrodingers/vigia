@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import json
@@ -7,7 +8,7 @@ import redis
 import time
 import threading
 import re
-from typing import Any, Dict, Optional, List, Awaitable, Callable
+from typing import Any, Dict, Optional, Awaitable, Callable, Tuple
 import asyncio
 
 import httpx
@@ -19,7 +20,7 @@ from selenium.webdriver.support.ui import WebDriverWait as Wait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-from pje_headless_server import run_server
+from .pje_headless_server import run_server
 
 # --- Configuração (sem alterações) ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(funcName)s]: %(message)s")
@@ -511,6 +512,29 @@ class PjeWorker:
         threading.Thread(target=run_server, args=(self.cert_path, self.cert_pass, self.headless_port), daemon=True).start()
         time.sleep(2)
         logging.info("Servidor headless PJe pronto.")
+        
+    def refresh_and_store_token(self) -> bool:
+        """
+        Executa a rotina de login via Selenium e armazena o token no Redis.
+        Retorna True em caso de sucesso.
+        """
+        logging.info("Tentando obter um novo Bearer Token do Jus.br...")
+        try:
+            # A função _get_bearer_token já está no escopo global deste arquivo
+            token = _get_bearer_token()
+            if token and token.startswith("Bearer"):
+                # Armazena o token no Redis com expiração de 2 horas (7200s)
+                self.redis_conn.set("jusbr:bearer_token", token, ex=7200)
+                logging.info("Bearer Token atualizado e salvo no Redis com sucesso.")
+                return True
+            else:
+                logging.error("Falha ao obter um Bearer Token válido.")
+                self.redis_conn.delete("jusbr:bearer_token")
+                return False
+        except Exception as e:
+            logging.exception(f"Uma exceção ocorreu durante a obtenção do token: {e}")
+            self.redis_conn.delete("jusbr:bearer_token")
+            return False
 
     async def _get_token_cached(self) -> str:
         # Primeiro uso: reutiliza se já existe; NÃO reloga à toa
@@ -536,6 +560,47 @@ class PjeWorker:
             return 35
         return 60
 
+    async def get_documento_conteudo_for_doc(self, doc: Dict[str, Any], api_client: PjeApiClient) -> Tuple[str, Optional[bytes]]:
+        """
+        Busca o conteúdo textual e binário de um documento, com lógica de fallback.
+
+        Retorna:
+            Tuple[str, Optional[bytes]]: (conteúdo_texto, conteúdo_binário)
+        """
+        href_texto = doc.get("hrefTexto")
+        href_binario = doc.get("hrefBinario")
+        tamanho_arquivo = doc.get("arquivo", {}).get("tamanho")
+
+        texto_final = f"[Texto não pôde ser extraído para o documento: {doc.get('nome')}]"
+        binario_final = None
+
+        # --- Etapa 1: Tenta buscar o binário primeiro (fonte da verdade) ---
+        if href_binario:
+            try:
+                timeout = httpx.Timeout(connect=20, read=self._deduz_read_timeout(tamanho_arquivo))
+                resp_bin = await api_client._request("GET", href_binario, timeout=timeout)
+                resp_bin.raise_for_status()
+                binario_final = resp_bin.content
+                logging.info(f"Sucesso ao baixar binário de '{doc.get('nome')}' ({len(binario_final) / 1024:.1f} KB).")
+                
+                # Tenta extrair texto do binário baixado
+                texto_extraido = await api_client._extract_text_fallback(href_texto, resp_bin)
+                if texto_extraido and not texto_extraido.startswith("["):
+                    texto_final = texto_extraido
+            except Exception as e:
+                logging.warning(f"Falha ao baixar binário de '{doc.get('nome')}': {e}. Tentando /texto como fallback.")
+        
+        # --- Etapa 2: Se o binário falhou ou não existe, tenta o endpoint de texto ---
+        if binario_final is None and href_texto:
+            try:
+                timeout = httpx.Timeout(connect=20, read=self._deduz_read_timeout(tamanho_arquivo))
+                texto_final = await api_client.get_documento_texto(href_texto)
+                logging.info(f"Sucesso ao obter texto de '{doc.get('nome')}' via endpoint /texto.")
+            except Exception as e:
+                logging.error(f"Falha total ao obter conteúdo para '{doc.get('nome')}': {e}")
+        
+        return texto_final, binario_final
+    
     async def get_documento_texto_for_doc(self, doc: Dict[str, Any]) -> str:
         api_client = PjeApiClient(self._get_token_cached, self._refresh_token_force)
         href_texto   = doc.get("hrefTexto")
@@ -614,47 +679,70 @@ class PjeWorker:
             return ""
     
     async def process_task(self, numero_processo: str) -> Dict[str, Any]:
-        api_client = PjeApiClient(self._get_token_cached, self._refresh_token_force)
+        async def get_token_from_redis() -> str:
+            token = self.redis_conn.get("jusbr:bearer_token")
+            if not token:
+                logging.warning("Token não encontrado no Redis. Tentando um refresh forçado.")
+                if self.refresh_and_store_token():
+                    token = self.redis_conn.get("jusbr:bearer_token")
+                else:
+                    raise RuntimeError("Falha ao obter token mesmo após refresh.")
+            return token.decode('utf-8')
+
+        async def refresh_token_via_worker() -> str:
+            logging.info("Token expirado (401). Forçando refresh completo.")
+            if self.refresh_and_store_token():
+                token = self.redis_conn.get("jusbr:bearer_token")
+                if token:
+                    return token.decode('utf-8')
+            raise RuntimeError("Não foi possível renovar o token após expirar.")
+        
+        api_client = PjeApiClient(get_token_from_redis, refresh_token_via_worker)
         try:
-            logging.info(f"Buscando detalhes do processo {numero_processo} via API direta.")
+            logging.info(f"Buscando detalhes do processo {numero_processo} via API.")
             processo_details = await api_client.get_processo_details(numero_processo)
 
             documentos = (processo_details.get("tramitacaoAtual") or {}).get("documentos", []) or []
-            documentos_textuais: List[Dict[str, Any]] = []
+            
+            # Limita o número de documentos para evitar sobrecarga
+            subset_docs = sorted(documentos, key=lambda d: d.get('dataHoraJuntada'), reverse=True)[:30]
+            logging.info(f"Processando os {len(subset_docs)} documentos mais recentes...")
 
-            sem = asyncio.Semaphore(6)  # segura a rajada
+            sem = asyncio.Semaphore(5) # Limita a concorrência para não sobrecarregar a API
 
             async def _fetch_one(doc: Dict[str, Any]) -> Dict[str, Any]:
-                nome = doc.get("nome")
-                tipo = (doc.get("tipo") or {}).get("nome")
-                data_juntada = doc.get("dataHoraJuntada")
-                try:
-                    async with sem:
-                        texto = await self.get_documento_texto_for_doc(doc)
-                    return {"nome": nome, "tipo": tipo, "data_juntada": data_juntada, "texto": texto}
-                except Exception as e:
-                    logging.warning(f"Falha ao buscar texto do doc '{nome}': {repr(e)}")
-                    return {"nome": nome, "tipo": tipo, "data_juntada": data_juntada, "texto": f"ERRO AO BUSCAR TEXTO: {e}"}
+                async with sem:
+                    try:
+                        texto, binario = await self.get_documento_conteudo_for_doc(doc, api_client)
+                        return {
+                            "external_id": doc.get("idOrigem") or doc.get("idCodex"),
+                            "name": doc.get("nome"),
+                            "document_type": (doc.get("tipo") or {}).get("nome"),
+                            "juntada_date": doc.get("dataHoraJuntada"),
+                            "text_content": texto,
+                            "binary_content_b64": base64.b64encode(binario).decode('utf-8') if binario else None,
+                            "file_type": doc.get("arquivo", {}).get("tipo"),
+                            "file_size": doc.get("arquivo", {}).get("tamanho")
+                        }
+                    except Exception as e:
+                        logging.warning(f"Falha ao buscar conteúdo do doc '{doc.get('nome')}': {repr(e)}")
+                        return {"name": doc.get("nome"), "error": str(e)}
 
-            subset = documentos[:30]
-            logging.info(f"Buscando o texto de até {len(subset)} documentos em paralelo…")
-            resultados = await asyncio.gather(*[_fetch_one(doc) for doc in subset], return_exceptions=False)
-
-            documentos_textuais.extend(resultados)
-            processo_details["documentos_textuais"] = documentos_textuais
+            tasks = [_fetch_one(doc) for doc in subset_docs]
+            documentos_com_conteudo = await asyncio.gather(*tasks)
+            
+            # Adiciona o novo campo ao JSON que será retornado
+            processo_details["documentos_com_conteudo"] = documentos_com_conteudo
+            
             return processo_details
 
         except httpx.HTTPStatusError as e:
-            # Erros HTTP fora o 401 (já tratado no client) — sem traceback
             status = e.response.status_code if e.response is not None else "?"
             logging.error(f"HTTP {status} ao consultar {numero_processo}: {e}", exc_info=False)
             return {"erro": f"HTTP {status} ao consultar o processo."}
-
         except Exception as e:
-            # Erros inesperados — sem traceback
             logging.error(f"Erro inesperado ao processar {numero_processo}: {e}", exc_info=False)
             return {"erro": str(e)}
-
         finally:
             await api_client.close()
 

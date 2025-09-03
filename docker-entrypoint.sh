@@ -19,7 +19,7 @@ case "$ROLE" in
       ;;
   worker)
       echo "🚀 Celery (worker genérico)"
-      exec celery -A vigia.worker.celery_app worker --loglevel=info
+      poetry run celery -A vigia.worker.celery_app worker -l info -Q jusbr_work_queue,jusbr_control_queue -c 1
       ;;
   *)
       echo "ROLE desconhecido: $ROLE"

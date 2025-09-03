@@ -1,49 +1,115 @@
-from sqlalchemy import Column, String, DateTime, func, ForeignKey, Text, JSON, Boolean, Float
+from sqlalchemy import (Column, String, DateTime, func, ForeignKey, Text, JSON, 
+                        Boolean, Float, Integer, LargeBinary)
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from lib.uuid import uuid7 as lib_uuid7
+from passlib.context import CryptContext
 
 Base = declarative_base()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def as_std_uuid():
-    # Converte lib_uuid.UUID → uuid.UUID
     return uuid.UUID(str(lib_uuid7()))
 
-class Conversation(Base):
-    __tablename__ = "conversations"
+# --- Modelos de Autenticação e Usuários ---
+class User(Base):
+    __tablename__ = "users"
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    remote_jid = Column(String, unique=True, index=True, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, onupdate=func.now(), default=func.now())
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
 
-    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
-    
-    # A relação com a análise agora é polimórfica
-    analysis = relationship(
-        "Analysis",
-        primaryjoin="and_(Conversation.id==foreign(Analysis.analysable_id), "
-                    "Analysis.analysable_type=='conversation')",
-        uselist=False,
-        cascade="all, delete-orphan",
-        overlaps="conversation,analysis"
-    )
+    negotiations = relationship("Negotiation", back_populates="assigned_agent")
+    processes = relationship("LegalProcess", back_populates="owner")
+    chat_sessions = relationship("ChatSession", back_populates="owner")
 
-class Message(Base):
-    __tablename__ = "messages"
+    def verify_password(self, plain_password):
+        return pwd_context.verify(plain_password, self.hashed_password)
+
+# --- Modelos Legais e de Negociação ---
+class LegalProcess(Base):
+    __tablename__ = "legal_processes"
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    external_id = Column(String, unique=True, index=True, nullable=False)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False)
-    sender = Column(String, nullable=False)
-    text = Column(Text, nullable=True)
-    message_timestamp = Column(DateTime, nullable=False)
+    process_number = Column(String, unique=True, index=True, nullable=False)
+    classe_processual = Column(String, nullable=True)
+    assunto = Column(String, nullable=True)
+    orgao_julgador = Column(String, nullable=True)
+    tribunal = Column(String, nullable=True)
+    status = Column(String, index=True)
+    valor_causa = Column(Float, nullable=True)
+    start_date = Column(DateTime(timezone=True), nullable=True)
+    last_update = Column(DateTime(timezone=True), nullable=True)
+    summary_content = Column(Text, nullable=True)
+    analysis_content = Column(JSON, nullable=True)
+    raw_data = Column(JSON, nullable=True) # Campo para guardar o JSON bruto do Jus.br
     
-    conversation = relationship("Conversation", back_populates="messages")
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    owner = relationship("User", back_populates="processes")
+    
+    movements = relationship("ProcessMovement", back_populates="process", cascade="all, delete-orphan")
+    parties = relationship("ProcessParty", back_populates="process", cascade="all, delete-orphan")
+    documents = relationship("ProcessDocument", back_populates="process", cascade="all, delete-orphan")
+    negotiations = relationship("Negotiation", back_populates="legal_process")
 
-# --- Modelos do Departamento de E-mail ---
+class ProcessMovement(Base):
+    __tablename__ = "process_movements"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    date = Column(DateTime(timezone=True), nullable=False)
+    description = Column(Text, nullable=False)
+    
+    process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
+    process = relationship("LegalProcess", back_populates="movements")
+
+class ProcessParty(Base):
+    __tablename__ = "process_parties"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    polo = Column(String(50), nullable=False) # ATIVO, PASSIVO
+    name = Column(String, nullable=False)
+    document_type = Column(String, nullable=True) # CPF, CNPJ
+    document_number = Column(String, nullable=True)
+    representatives = Column(JSON, nullable=True) # Para armazenar advogados
+    
+    process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
+    process = relationship("LegalProcess", back_populates="parties")
+
+class ProcessDocument(Base):
+    __tablename__ = "process_documents"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    external_id = Column(String, index=True, nullable=True) # idOrigem ou idCodex
+    name = Column(String, nullable=False)
+    document_type = Column(String, nullable=True)
+    juntada_date = Column(DateTime(timezone=True), nullable=False)
+    file_type = Column(String, nullable=True) # ex: application/pdf
+    file_size = Column(Integer, nullable=True)
+    text_content = Column(Text, nullable=True)
+    binary_content = Column(LargeBinary, nullable=True) # ARMAZENA O ARQUIVO
+    
+    process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
+    process = relationship("LegalProcess", back_populates="documents")
+
+class Negotiation(Base):
+    __tablename__ = "negotiations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    status = Column(String, default="active", index=True)
+    priority = Column(String, default="medium")
+    debt_value = Column(Float, nullable=True)
+    summary_content = Column(Text, nullable=True)
+    analysis_content = Column(JSON, nullable=True)
+    
+    assigned_agent_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    assigned_agent = relationship("User", back_populates="negotiations")
+
+    email_thread_id = Column(UUID(as_uuid=True), ForeignKey("email_threads.id"))
+    email_thread = relationship("EmailThread", back_populates="negotiation")
+    
+    legal_process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=True)
+    legal_process = relationship("LegalProcess", back_populates="negotiations")
+
+
+# --- Modelos do Departamento de E-mail (com relações adicionadas) ---
 class EmailThread(Base):
     __tablename__ = 'email_threads'
-    
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
     conversation_id = Column(String, unique=True, index=True, nullable=False)
     subject = Column(String, index=True)
@@ -52,81 +118,72 @@ class EmailThread(Base):
     participants = Column(JSON)
     
     messages = relationship("EmailMessage", back_populates="thread", cascade="all, delete-orphan")
+    analysis = relationship("Analysis", back_populates="email_thread", uselist=False, cascade="all, delete-orphan")
+    negotiation = relationship("Negotiation", back_populates="email_thread", uselist=False, cascade="all, delete-orphan")
+    judicial_analysis = relationship("JudicialAnalysis", back_populates="thread", cascade="all, delete-orphan")
 
-    # A relação com a análise agora é polimórfica
-    analysis = relationship(
-        "Analysis",
-        primaryjoin="and_(EmailThread.id==foreign(Analysis.analysable_id), "
-                    "Analysis.analysable_type=='email_thread')",
-        uselist=False,
-        cascade="all, delete-orphan"
-    )
 
 class EmailMessage(Base):
     __tablename__ = 'email_messages'
-    
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
     message_id = Column(String, unique=True, nullable=False)
-    thread_id = Column(UUID(as_uuid=True), ForeignKey('email_threads.id'), nullable=False, default=as_std_uuid)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey('email_threads.id'), nullable=False)
     sender = Column(String)
     body = Column(Text)
     sent_datetime = Column(DateTime, nullable=False)
     internet_message_id = Column(String, unique=True, nullable=True, index=True)
     has_attachments = Column(Boolean, default=False)
-    importance = Column(String, nullable=True) # Ex: 'normal', 'high'
+    importance = Column(String, nullable=True)
     
     thread = relationship("EmailThread", back_populates="messages")
 
-
-# --- Modelo de Análise Generalizado (Polimórfico) ---
+# --- Modelos de Análise e Chat ---
 class Analysis(Base):
     __tablename__ = "analyses"
-    
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    
-    # Colunas para a associação polimórfica
-    analysable_id = Column(String, nullable=False, index=True)
-    analysable_type = Column(String(50), nullable=False)
-
-    # Dados da Análise
+    email_thread_id = Column(UUID(as_uuid=True), ForeignKey("email_threads.id"))
     extracted_data = Column(JSON, nullable=True)
     temperature_assessment = Column(JSON, nullable=True)
     director_decision = Column(JSON, nullable=True)
-    
     kpis = Column(JSON, nullable=True)
     advisor_recommendation = Column(JSON, nullable=True)
     context = Column(JSON, nullable=True)
     formal_summary = Column(JSON, nullable=True)
-    
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now(), default=func.now())
-
-    # Se quiser, pode adaptar para funcionar com diferentes tipos de PK (UUID e Integer)
-    __mapper_args__ = {
-        'polymorphic_on': analysable_type
-    }
     
+    email_thread = relationship("EmailThread", back_populates="analysis")
+
 class JudicialAnalysis(Base):
-    """
-    Armazena o resultado da análise estratégica do "Júri de IAs".
-    Cada registro representa uma decisão ponderada sobre uma negociação específica,
-    servindo como um valioso registro para auditoria e futuro treinamento de modelos.
-    """
     __tablename__ = 'judicial_analyses'
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    thread_id = Column(UUID(as_uuid=True), ForeignKey('email_threads.id'), nullable=False, default=as_std_uuid)
-    
-    # O veredito final do agente Juiz
+    thread_id = Column(UUID(as_uuid=True), ForeignKey('email_threads.id'), nullable=False)
     recommended_action = Column(JSON, nullable=False)
-    # A justificativa detalhada para a decisão tomada
     legal_rationale = Column(Text, nullable=False)
-    # As teses completas dos agentes "advogados" para rastreabilidade
     conservative_thesis = Column(JSON, nullable=True)
     strategic_thesis = Column(JSON, nullable=True)
-    # A confiança do Juiz em sua própria decisão
     confidence_score = Column(Float, nullable=True)
-    # Timestamp da análise
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    # Relacionamento para fácil acesso à thread a partir da análise
-    thread = relationship("EmailThread")
+    
+    thread = relationship("EmailThread", back_populates="judicial_analysis")
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    title = Column(String, default="Nova Conversa")
+    created_at = Column(DateTime, server_default=func.now())
+
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    owner = relationship("User", back_populates="chat_sessions")
+    
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+    
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    role = Column(String, nullable=False) # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    timestamp = Column(DateTime, server_default=func.now())
+    
+    session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"))
+    session = relationship("ChatSession", back_populates="messages")

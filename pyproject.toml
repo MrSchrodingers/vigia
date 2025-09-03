@@ -13,6 +13,9 @@ fastapi            = "^0.116.1"
 uvicorn            = { extras = ["standard"], version = "^0.35.0" }
 redis              = "^6.2.0"
 celery             = "^5.5.3"
+passlib            = {extras = ["bcrypt"], version = "^1.7.4"}
+python-jose        = {extras = ["cryptography"], version = "^3.5.0"}
+python-multipart   = "^0.0.20" 
 
 # ------------- IA / dados --------------
 openai             = "^1.97.1"
@@ -29,6 +32,8 @@ numpy              = "<2"
 # ------------- HTML --------------
 beautifulsoup4     = "^4.13.4"
 tenacity           = "^9.1.2"
+selenium-wire      = "^5.1.0"
+webdriver-manager  = "^4.0.2"
 
 # ------------- infra -------------
 sqlalchemy         = "^2.0.42"
