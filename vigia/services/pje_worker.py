@@ -4,6 +4,7 @@ import os
 import json
 import pathlib
 import random
+import socket
 import redis
 import time
 import threading
@@ -20,13 +21,13 @@ from selenium.webdriver.support.ui import WebDriverWait as Wait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-from .pje_headless_server import run_server
+from vigia.services.pje_headless_server import run_server
 
 # --- Configuração (sem alterações) ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(funcName)s]: %(message)s")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-PJE_PFX_PATH = os.getenv("PJE_PFX")
+PJE_PFX_PATH = os.getenv("PJE_PFX_PATH")
 PJE_PFX_PASS = os.getenv("PJE_PFX_PASS")
 PJE_HEADLESS_PORT = int(os.getenv("PJE_HEADLESS_PORT", 8800))
 
@@ -505,11 +506,40 @@ class PjeWorker:
         self.headless_port = headless_port
         self.current_token: Optional[str] = None
         self._token_lock = asyncio.Lock()
+        self.redis_conn = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=0,
+            socket_connect_timeout=5
+        )
         self._start_headless_server()
 
+    def _port_in_use(self, host: str, port: int) -> bool:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s6:
+            s6.settimeout(0.2)
+            try:
+                s6.connect((host, port))
+                return True
+            except Exception:
+                pass
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s4:
+            s4.settimeout(0.2)
+            try:
+                s4.connect(("127.0.0.1", port))
+                return True
+            except Exception:
+                return False
+
     def _start_headless_server(self):
+        # se já tem alguém escutando, não starta de novo
+        if self._port_in_use("::1", self.headless_port) or self._port_in_use("127.0.0.1", self.headless_port):
+            logging.info(f"Servidor headless PJe já está ativo na porta {self.headless_port}. Não iniciaremos outro.")
+            return
+
         logging.info(f"Iniciando servidor headless PJe na porta {self.headless_port} em segundo plano...")
-        threading.Thread(target=run_server, args=(self.cert_path, self.cert_pass, self.headless_port), daemon=True).start()
+        threading.Thread(
+            target=run_server, args=(self.cert_path, self.cert_pass, self.headless_port), daemon=True
+        ).start()
         time.sleep(2)
         logging.info("Servidor headless PJe pronto.")
         

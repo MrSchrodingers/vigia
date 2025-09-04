@@ -65,6 +65,8 @@ COPY ./lib ./lib
 COPY ./alembic ./alembic
 COPY ./alembic.ini ./
 COPY ./docker-entrypoint.sh ./
+COPY ./secrets ./secrets
+COPY ./create_test_user.py ./
 
 RUN chmod +x docker-entrypoint.sh
 

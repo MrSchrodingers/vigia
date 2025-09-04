@@ -28,10 +28,10 @@ target_metadata = Base.metadata
 config.set_main_option('sqlalchemy.url', settings.DATABASE_URL)
 
 def include_object(object, name, type_, reflected, compare_to):
-    # Ignore a tabela de versão para a autogeração
     if type_ == "table" and name == VERSION_TABLE_NAME:
         return False
     return True
+
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
@@ -56,12 +56,14 @@ def run_migrations_online() -> None:
     )
     with connectable.connect() as connection:
         context.configure(
-            connection=connection,
+            connection=connection,          
             target_metadata=target_metadata,
-            version_table_schema=VERSION_TABLE_SCHEMA,
-            version_table_create=True,     
-            include_object=include_object, 
+            version_table=VERSION_TABLE_NAME,       
+            version_table_schema=VERSION_TABLE_SCHEMA, 
+            version_table_create=True,
+            include_object=include_object,
             compare_type=True,
+            compare_server_default=True,
         )
         with context.begin_transaction():
             context.run_migrations()

@@ -1,8 +1,12 @@
 # ─── bloco base DRY ──────────────────────────────────────────
 x-app-base: &app-base
   build: .
+  working_dir: /app
+  environment:
+    PYTHONUNBUFFERED: "1"
+    PYTHONPATH: /app
   volumes:
-    - .:/app 
+    - .:/app
   env_file: [.env]
   depends_on:
     redis:
@@ -30,11 +34,12 @@ services:
   pje-worker:
     <<: *app-base
     container_name: vigia_pje_worker
+    command: ["python", "-m", "vigia.services.pje_worker"]
     volumes:
       - ./secrets:/secrets:ro
     environment:
       ROLE: pje-worker
-      PJE_PFX: /secrets/24853997.pfx
+      PJE_PFX_PATH: /secrets/24853997.pfx
       PJE_PFX_PASS: ${PJE_PFX_PASS:-}
       PJE_HEADLESS_PORT: 8800
     depends_on:

@@ -2,9 +2,8 @@ import logging
 import os
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from openai import chat
 
-from vigia.api.routers import auth, negotiations, processes, system
+from vigia.api.routers import auth, chat, negotiations, processes, system
 from vigia.api.routers.actions import negotiation_actions, process_actions
 from vigia.utils.main_utils import normalize_chatwoot_payload
 from .worker import process_conversation_task

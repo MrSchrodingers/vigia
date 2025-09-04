@@ -1,7 +1,36 @@
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, EmailStr
 from typing import Any, List, Optional
 from datetime import datetime
 import uuid
+
+def parse_email_html(html_body: Optional[str]) -> str:
+    """
+    Limpa o HTML de um corpo de e-mail, removendo tags, assinaturas e histórico de respostas.
+    """
+    if not html_body:
+        return ""
+    
+    soup = BeautifulSoup(html_body, 'html.parser')
+    
+    # Remove blocos de resposta e assinaturas comuns do Outlook/Gmail
+    for block in soup.find_all("div", {"id": lambda x: x and x.startswith('divRplyFwdMsg')}):
+        block.decompose()
+    for blockquote in soup.find_all("blockquote"):
+        blockquote.decompose()
+    
+    # Remove quebras de linha excessivas e obtém o texto
+    text = soup.get_text(separator='\n', strip=True)
+    
+    # Tenta remover o histórico de e-mails (heurística)
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        if line.strip().lower().startswith(('de:', 'from:', 'enviada em:', 'sent:')):
+            break
+        clean_lines.append(line)
+        
+    return '\n'.join(clean_lines).strip()
 
 # --- Base Schemas ---
 class Token(BaseModel):
@@ -34,14 +63,14 @@ class Message(BaseModel):
 
     class Config:
         from_attributes = True
-        # Mapeamento para renomear campos do modelo SQLAlchemy
         @classmethod
         def from_orm(cls, obj):
-            # Adapta o objeto EmailMessage para o schema Message
+            # ✅ A MÁGICA ACONTECE AQUI!
+            # O corpo do e-mail (obj.body) é parseado antes de ser enviado.
             return super().from_orm({
                 'id': obj.id,
                 'sender': obj.sender,
-                'content': obj.body,
+                'content': parse_email_html(obj.body), # Limpa o HTML
                 'timestamp': obj.sent_datetime,
             })
 
@@ -62,6 +91,7 @@ class Negotiation(BaseModel):
 
 class NegotiationDetails(Negotiation):
     messages: List[Message] = []
+    email_thread: Optional[Any] = None
 
 # --- Legal Process Schemas ---
 class ProcessMovement(BaseModel):

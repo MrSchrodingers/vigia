@@ -24,7 +24,7 @@ async def force_jusbr_login(background_tasks: BackgroundTasks):
     Dispara a rotina de login do Jus.br em background.
     Mapeia para a função handleRefreshLogin().
     """
-    background_tasks.add_task(jusbr_service.refresh_login())
+    background_tasks.add_task(jusbr_service.refresh_login)
     return {"is_active": False, "message": "Login refresh initiated."}
 
 @router.post("/sync-emails", response_model=schemas.ActionResponse)

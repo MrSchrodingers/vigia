@@ -60,8 +60,6 @@ async def llm_call(
             system_prompt, user_prompt, use_tools, available_tools,
             expects_json=expects_json, json_schema=json_schema
         )
-    elif settings.LLM_PROVIDER == "ollama":
-        raw_response = await _call_ollama_async(system_prompt, user_prompt)
     else:
         return '{"error": "LLM provider not configured"}'
 
@@ -134,22 +132,3 @@ async def _call_gemini_async(
     except Exception as e:
         logging.error(f"Erro na API do Gemini (async): {e}")
         return '{"error": "Gemini API call failed"}'
-
-async def _call_ollama_async(system_prompt: str, user_prompt: str) -> str:
-    """Versão assíncrona para chamar o Ollama."""
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            payload = {
-                "model": settings.OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "stream": False, "format": "json"
-            }
-            response = await client.post(f"{settings.OLLAMA_API_URL}/api/chat", json=payload)
-            response.raise_for_status()
-            return response.json()['message']['content']
-    except httpx.RequestError as e:
-        logging.error(f"Erro ao chamar a API do Ollama (async): {e}")
-        return '{"error": "Ollama API call failed"}'

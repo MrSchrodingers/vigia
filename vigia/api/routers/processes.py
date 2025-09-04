@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from vigia.api import schemas, dependencies
-from vigia.services import crud, jusbr_service
+from vigia.services import crud
+from vigia.services.jusbr_service import jusbr_service
 from db.models import User, ProcessDocument
 
 router = APIRouter(

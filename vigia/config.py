@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # ───────────────────── App / Runtime ──────────────────────
     ENVIRONMENT: str = Field(default="development")
     LOG_LEVEL: str = Field(default="INFO")
+    
+    # JWT / Auth  ← NOVO
+    SECRET_KEY: str 
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
 
     # UID/GID opcionais (usados no docker-compose para mapear volumes)
     UID: int | None = None
@@ -66,7 +71,9 @@ class Settings(BaseSettings):
 
     # ────────────── PJe Office (headless) ───────────────
     PJE_PFX_PASS: str
-
+    PJE_PFX_PATH: str 
+    PJE_HEADLESS_PORT: int
+    
     # ────────────── Jus.br PDPJ ───────────────
     JUSBR_API_BASE_URL: str
     JUSBR_CLIENT_ID: str

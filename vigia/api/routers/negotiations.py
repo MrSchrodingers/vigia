@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from vigia.api import schemas, dependencies
 from vigia.services import crud
-from db.models import User
+from db.models import User, Negotiation, EmailThread
 
 router = APIRouter(
     prefix="/api/negotiations",
@@ -21,21 +21,29 @@ def read_negotiations(
 ):
     results = crud.get_negotiations(db=db, user_id=current_user.id, skip=skip, limit=limit)
     
-    # Esta parte adapta o resultado da query para o schema Pydantic
-    # Pode ser otimizado com um DTO mais direto no futuro
     response_data = []
-    for neg, count, last_time in results:
-        # Lógica para pegar um nome de cliente (exemplo, pode ser melhorado)
-        client_name = "Cliente Exemplo"
+    for neg, count, last_time, last_message_body in results:
+        client_name = "Cliente Desconhecido"
+        # Lógica aprimorada para extrair o nome do cliente
         if neg.email_thread and neg.email_thread.participants:
-            client_emails = [p for p in neg.email_thread.participants if '@' in p and 'amaralvasconcellos.com.br' not in p]
+            # Encontra o primeiro e-mail que não é do seu domínio
+            client_emails = [
+                p for p in neg.email_thread.participants 
+                if p and '@' in p and 'amaralvasconcellos.com.br' not in p and 'pavcob.com.br' not in p
+            ]
             if client_emails:
-                client_name = client_emails[0]
+                # Usa a parte antes do @ como nome do cliente
+                client_name = client_emails[0].split('@')[0].replace('.', ' ').title()
 
         response_data.append({
-            **neg.__dict__,
+            "id": neg.id,
+            "status": neg.status,
+            "priority": neg.priority,
+            "debt_value": neg.debt_value,
+            "assigned_agent_id": neg.assigned_agent_id,
             "message_count": count,
             "last_message_time": last_time,
+            "last_message": schemas.parse_email_html(last_message_body), # Limpa a última mensagem
             "client_name": client_name,
             "process_number": neg.legal_process.process_number if neg.legal_process else "N/A"
         })
@@ -44,11 +52,14 @@ def read_negotiations(
 
 @router.get("/{negotiation_id}", response_model=schemas.NegotiationDetails)
 def read_negotiation_details(negotiation_id: str, db: Session = Depends(dependencies.get_db)):
-    db_negotiation = crud.get_negotiation_details(db, negotiation_id=negotiation_id)
+    # Usamos joinedload para buscar a thread e as mensagens de uma só vez (mais eficiente)
+    db_negotiation = db.query(Negotiation).options(
+        joinedload(Negotiation.email_thread).joinedload(EmailThread.messages)
+    ).filter(Negotiation.id == negotiation_id).first()
+
     if db_negotiation is None:
         raise HTTPException(status_code=404, detail="Negotiation not found")
     
-    # Mapeia as mensagens do email_thread para o schema correto
-    messages = [schemas.Message.from_orm(msg) for msg in db_negotiation.email_thread.messages]
-    
-    return {**db_negotiation.__dict__, "messages": messages}
+    # O schema Pydantic agora cuida do parsing de cada mensagem automaticamente
+    # graças à função from_orm que modificamos.
+    return db_negotiation
