@@ -99,7 +99,7 @@ async def _call_gemini_async(
     gemini_request_timestamps.append(time.monotonic())
 
     try:
-        model_name = settings.GEMINI_MODEL or "gemini-2.5-flash"
+        model_name = "gemini-2.5-flash"
         generation_config = {}
         if expects_json:
             generation_config["response_mime_type"] = "application/json"

@@ -26,36 +26,39 @@ class PostgresEmailRepository(EmailRepositoryPort):
                 # Passo 1: Verifica se a thread já existe
                 db_thread = db.query(models.EmailThread).filter_by(conversation_id=conv_id).first()
 
+                # Normaliza participants para list (pode ter vindo como set do enrichment)
+                participants = data.get("participants") or []
+                if isinstance(participants, set):
+                    participants = sorted(participants)
+
                 if not db_thread:
-                    # É UMA NOVA CONVERSA: Crie a Thread E a Negociação
+                    # NOVA CONVERSA: cria Thread e Negociação
                     db_thread = models.EmailThread(
                         conversation_id=conv_id,
                         subject=data["subject"],
                         first_email_date=data["first_email_date"],
                         last_email_date=data["last_email_date"],
-                        participants=data["participants"]
+                        participants=participants,
                     )
                     db.add(db_thread)
-                    
-                    # Cria a negociação vinculada
+
                     db_negotiation = models.Negotiation(
                         email_thread=db_thread,
                         assigned_agent=default_agent,
-                        # Você pode definir valores padrão aqui
-                        status="active", 
-                        priority="medium"
+                        status="active",
+                        priority="medium",
                     )
                     db.add(db_negotiation)
                     logger.info("repository.new_thread_and_negotiation.created", conv_id=conv_id)
                 else:
-                    # THREAD EXISTENTE: Apenas atualize os dados
+                    # THREAD EXISTENTE: atualiza campos básicos
                     db_thread.subject = data["subject"]
                     db_thread.last_email_date = data["last_email_date"]
-                    db_thread.participants = data["participants"]
+                    db_thread.participants = participants
 
-                db.flush() # Garante que db_thread.id está disponível
+                db.flush()  # garante db_thread.id
 
-                # Passo 2: Insere as mensagens (como antes)
+                # Passo 2: Inserção em massa de mensagens (com deduplicação local)
                 messages_to_insert = [
                     {
                         "thread_id": db_thread.id,
@@ -65,15 +68,31 @@ class PostgresEmailRepository(EmailRepositoryPort):
                         "body": email_dto.body_content,
                         "sent_datetime": email_dto.sent_datetime,
                         "has_attachments": email_dto.has_attachments,
-                        "importance": email_dto.importance
-                    } for email_dto in data["messages"]
+                        "importance": email_dto.importance,
+                    }
+                    for email_dto in data["messages"]
                 ]
-                
+
                 if messages_to_insert:
-                    stmt = insert(models.EmailMessage).values(messages_to_insert)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['message_id'])
-                    db.execute(stmt)
-                    total_messages_saved += len(messages_to_insert)
+                    # Dedup no lote por message_id e internet_message_id
+                    unique_rows, seen_msg_ids, seen_imids = [], set(), set()
+                    for row in messages_to_insert:
+                        mid = row["message_id"]
+                        imid = row.get("internet_message_id")
+                        if mid in seen_msg_ids or (imid and imid in seen_imids):
+                            continue
+                        seen_msg_ids.add(mid)
+                        if imid:
+                            seen_imids.add(imid)
+                        unique_rows.append(row)
+
+                    if unique_rows:
+                        stmt = insert(models.EmailMessage).values(unique_rows)
+                        # Catch-all: ignora qualquer conflito de unicidade (message_id, internet_message_id, etc.)
+                        stmt = stmt.on_conflict_do_nothing().returning(models.EmailMessage.id)
+                        result = db.execute(stmt)
+                        inserted = len(result.scalars().all())
+                        total_messages_saved += inserted
 
             db.commit()
             logger.info("repository.save_threads.success", count=len(threads_data))

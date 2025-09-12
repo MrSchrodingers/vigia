@@ -1,4 +1,3 @@
-# vigia/services/jusbr_utils.py
 from typing import List, Dict, Any
 
 def build_timeline(tramitacao_atual: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -35,27 +34,36 @@ def build_timeline(tramitacao_atual: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def build_evidence_index(root: dict) -> dict:
-    """
-    Constrói um índice leve de evidências para citação:
-    {
-      "docs": { "<doc_id>": {"label": "NOME (doc_id)", "data": "YYYY-MM-DD", "tipo": "CONTESTAÇÃO", "url": "..."} },
-      "moves": [ {"data":"YYYY-MM-DD","descricao":"...","tipo":"MOVIMENTO","doc_ref":"<doc_id>"} ]
-    }
-    """
+    if isinstance(root, list):
+        docs_list = root
+        moves_list = []
+    else:
+        docs_list = (root or {}).get("documentos") or []
+        moves_list = (root or {}).get("timeline_pre") or []
+
     docs = {}
-    for d in root.get("documentos") or []:
-        doc_id = d.get("id") or d.get("documentoId")
+    for d in docs_list:
+        doc_id = (
+            d.get("id")
+            or d.get("documentoId")
+            or d.get("external_id")
+            or d.get("origin_id")
+            or d.get("codex_id")
+            or d.get("sequence")
+        )
         if not doc_id:
             continue
+        doc_id = str(doc_id)
+
         docs[doc_id] = {
-            "label": f'{(d.get("nome") or d.get("titulo") or "Documento")[:120]} ({doc_id})',
-            "data": d.get("data") or d.get("dataJuntada") or "",
-            "tipo": d.get("tipo") or d.get("categoria") or "",
-            "url": d.get("url") or d.get("downloadUrl") or None,
+            "label": f'{(d.get("name") or d.get("titulo") or "Documento")[:120]} ({doc_id})',
+            "data": d.get("data") or d.get("dataJuntada") or d.get("juntada_date") or "",
+            "tipo": d.get("tipo") or d.get("categoria") or d.get("document_type") or "",
+            "url": d.get("url") or d.get("downloadUrl") or d.get("href_text") or d.get("href_binary") or None,
         }
 
     moves = []
-    for it in (root.get("timeline_pre") or []):
+    for it in moves_list:
         moves.append({
             "data": it.get("data") or "",
             "descricao": it.get("descricao") or "",

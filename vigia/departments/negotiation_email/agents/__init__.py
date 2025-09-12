@@ -22,7 +22,8 @@ from .legal_context_agent import LegalContextSynthesizerAgent
 from ..agents.judicial_jury_agents import (
     ConservativeAdvocateAgent,
     StrategicAdvocateAgent,
-    JudicialArbiterAgent
+    JudicialArbiterAgent,
+    TransitInRemJudicatamAgent
 )
 
 # --- Instâncias dos Agentes de Contexto ---
@@ -51,6 +52,7 @@ legal_context_synthesizer_agent = LegalContextSynthesizerAgent()
 conservative_advocate_agent = ConservativeAdvocateAgent()
 strategic_advocate_agent = StrategicAdvocateAgent()
 judicial_arbiter_agent = JudicialArbiterAgent()
+transit_agent = TransitInRemJudicatamAgent()
 
 __all__ = [
     "context_miner_agent",
@@ -68,4 +70,5 @@ __all__ = [
     "conservative_advocate_agent",
     "strategic_advocate_agent",
     "judicial_arbiter_agent",
+    "transit_agent"
 ]

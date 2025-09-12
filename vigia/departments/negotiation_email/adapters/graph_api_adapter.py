@@ -62,18 +62,24 @@ class GraphApiAdapter(GraphClientPort):
         log.info("graph_adapter.fetch_conversation_thread.start")
 
         fields = [
-            "id", "subject", "sentDateTime", "isRead", "conversationId",
-            "hasAttachments", "from", "toRecipients", "importance", 
-            "isReadReceiptRequested", "internetMessageId", "body"
+            "id","subject","sentDateTime","isRead","conversationId",
+            "hasAttachments","from","toRecipients","importance",
+            "isReadReceiptRequested","internetMessageId","body"
         ]
-        select_query = f"$select={','.join(fields)}"
-        url = (
-            f"{self.base_url}/users/{account_email}/messages"
-            f"?$filter=conversationId eq '{conversation_id}'"
-            f"&$orderby=sentDateTime asc&{select_query}&$top=100"
-        )
-        page = self._get(url)
-        emails = [self._to_email_dto(item) for item in page.get("value", [])]
+
+        url = f"{self.base_url}/users/{account_email}/messages"
+        params = {
+            "$filter": f"conversationId eq '{conversation_id}'",
+            "$select": ",".join(fields),
+            "$top": "100",
+        }
+
+        emails: List[EmailDTO] = []
+        for page in self._paginate((url, params), log):
+            for item in page.get("value", []):
+                emails.append(self._to_email_dto(item))
+
+        emails.sort(key=lambda m: m.sent_datetime)
         log.info("graph_adapter.fetch_conversation_thread.success", total=len(emails))
         return emails
 
@@ -89,27 +95,42 @@ class GraphApiAdapter(GraphClientPort):
         token = TOKEN_PROVIDER.get_token()
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    def _get(self, url: str) -> dict:
+    def _get(self, url: str, params: dict | None = None) -> dict:
         try:
-            resp = self.session.get(url, headers=self._headers(), timeout=self._TIMEOUT)
+            resp = self.session.get(url, headers=self._headers(), timeout=self._TIMEOUT, params=params)
             resp.raise_for_status()
             return resp.json()
-        except requests.RequestException:
-            logger.exception("graph_adapter.request.error", url=url)
+        except requests.RequestException as e:
+            try:
+                logger.error("graph_adapter.request.error", url=url, params=params, status=getattr(e.response, "status_code", None), body=getattr(e.response, "text", None))
+            except Exception:
+                logger.exception("graph_adapter.request.error.unlogged_body")
             raise
 
-    def _paginate(self, first_url: str, log) -> Generator[dict, None, None]:
-        url = first_url
-        seen_urls = {url}
+    
+    def _paginate(self, first: tuple[str, dict] | str, log):
+        if isinstance(first, tuple):
+            url, params = first
+        else:
+            url, params = first, None
+
+        seen = set()
         while url:
-            data = self._get(url)
-            yield data
-            url = data.get("@odata.nextLink")
-            if url in seen_urls:
+            key = (url, tuple(sorted((params or {}).items())))
+            if key in seen:
                 log.error("graph_adapter.pagination.loop_detected", url=url)
                 break
-            seen_urls.add(url)
+            seen.add(key)
 
+            data = self._get(url, params=params)
+            yield data
+            next_link = data.get("@odata.nextLink")
+            if next_link:
+                # nextLink já vem completo; zere params para não duplicar
+                url, params = next_link, None
+            else:
+                url = None
+                
     @staticmethod
     def _to_folder_dto(item: dict) -> FolderDTO:
         return FolderDTO(

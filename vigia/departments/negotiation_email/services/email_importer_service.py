@@ -23,6 +23,69 @@ class EmailImporterService:
         self.email_repo = email_repo
         self.sent_folder_name = settings.SENT_FOLDER_NAME.lower()
 
+    def _enrich_threads_with_full_conversation(self, account_email: str, threads_data: dict[str, dict]) -> None:
+        ORG_PARTS = [d.lower() for d in getattr(settings, "ORG_DOMAINS", ["amaralvasconcellos.com.br","pavcob.com.br"])]
+
+        for conv_id, data in list(threads_data.items()):
+            participants_set = set()
+            for p in (data.get("participants") or []):
+                if p:
+                    participants_set.add(p.lower())
+            data["participants"] = participants_set
+
+            dates_list = list(data.get("dates") or [])
+            if not dates_list:
+                if data.get("first_email_date"):
+                    dates_list.append(data["first_email_date"])
+                if data.get("last_email_date") and data["last_email_date"] != data.get("first_email_date"):
+                    dates_list.append(data["last_email_date"])
+                for msg in (data.get("messages") or []):
+                    dt = getattr(msg, "sent_datetime", None)
+                    if dt:
+                        dates_list.append(dt)
+            data["dates"] = dates_list
+
+            full_msgs = self.graph_client.fetch_conversation_thread(account_email, conv_id)
+            if not full_msgs:
+                data["participants"] = sorted(participants_set)
+                continue
+
+            seen_ids = {m.id for m in data["messages"]}
+            seen_internet_ids = {
+                m.internet_message_id for m in data["messages"]
+                if getattr(m, "internet_message_id", None)
+            }
+
+            for m in full_msgs:
+                if m.id in seen_ids or (m.internet_message_id and m.internet_message_id in seen_internet_ids):
+                    continue
+
+                data["messages"].append(m)
+                if m.from_address:
+                    participants_set.add(m.from_address.lower())
+                for r in (m.to_addresses or []):
+                    if r:
+                        participants_set.add(r.lower())
+                dt = getattr(m, "sent_datetime", None)
+                if dt:
+                    data["dates"].append(dt)
+
+                # >>> ATUALIZE OS SETS AQUI (dentro do loop)
+                seen_ids.add(m.id)
+                if m.internet_message_id:
+                    seen_internet_ids.add(m.internet_message_id)
+
+            if data["dates"]:
+                data["first_email_date"] = min(data["dates"])
+                data["last_email_date"]  = max(data["dates"])
+            if not data.get("subject") and full_msgs:
+                data["subject"] = full_msgs[0].subject
+
+            data["participants"] = sorted(participants_set)
+            # se não quiser levar 'dates' adiante:
+            # data.pop("dates", None)
+
+            
     def run_import_for_all_accounts(self):
         """Ponto de entrada principal para a importação."""
         log = logger.bind(service="EmailImporterService")
@@ -55,7 +118,7 @@ class EmailImporterService:
             return
 
         threads_data = self._process_emails_into_threads(relevant_emails)
-
+        self._enrich_threads_with_full_conversation(account_email, threads_data)
         if threads_data:
             saved_count = self.email_repo.save_threads_and_messages(threads_data)
             log.info("service.emails.persisted", saved_threads=len(threads_data), saved_messages=saved_count)

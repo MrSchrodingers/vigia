@@ -1,5 +1,5 @@
 from sqlalchemy import (Column, String, DateTime, func, ForeignKey, Text, JSON, 
-                        Boolean, Float, Integer, LargeBinary)
+                        Boolean, Float, Integer, LargeBinary, UniqueConstraint)
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
@@ -31,7 +31,9 @@ class User(Base):
 class LegalProcess(Base):
     __tablename__ = "legal_processes"
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    process_number = Column(String, unique=True, index=True, nullable=False)
+    process_number = Column(String, index=True, nullable=False) 
+    numero_unico_incidencia = Column(String, unique=True, index=True, nullable=True) # Identificador único para cada instância (processo + classe)
+    grupo_incidencia = Column(String, index=True, nullable=True) # "Flag" para agrupar instâncias do mesmo processo
     classe_processual = Column(String, nullable=True)
     assunto = Column(String, nullable=True)
     orgao_julgador = Column(String, nullable=True)
@@ -43,6 +45,29 @@ class LegalProcess(Base):
     summary_content = Column(Text, nullable=True)
     analysis_content = Column(JSON, nullable=True)
     raw_data = Column(JSON, nullable=True) # Campo para guardar o JSON bruto do Jus.br
+    secrecy_level = Column(Integer, nullable=True)  # nivelSigilo
+    instance = Column(String, nullable=True)        # tramitacaoAtual.instancia
+    degree_sigla = Column(String(8), nullable=True) # tramitacaoAtual.grau.sigla
+    degree_nome = Column(String(32), nullable=True) # tramitacaoAtual.grau.nome
+    degree_numero = Column(Integer, nullable=True)  # tramitacaoAtual.grau.numero
+
+    # distribuição "principal" (se quiser guardar o primeiro item também aqui)
+    distribuicao_first_datetime = Column(DateTime(timezone=True), nullable=True)
+    orgao_julgador_id = Column(Integer, nullable=True)  # id numérico
+
+    # tribunal detalhado
+    tribunal_nome = Column(String, nullable=True)
+    tribunal_segmento = Column(String, nullable=True)
+    tribunal_jtr = Column(String, nullable=True)
+
+    # classe/assunto (códigos)
+    classe_codigo = Column(Integer, nullable=True)
+    assunto_codigo = Column(Integer, nullable=True)
+    assunto_hierarquia = Column(Text, nullable=True)
+
+    permite_peticionar = Column(Boolean, nullable=True)
+    fonte_dados_codex_id = Column(Integer, nullable=True)  # idFonteDadosCodex
+    ativo = Column(Boolean, nullable=True)
     
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     owner = relationship("User", back_populates="processes")
@@ -51,6 +76,27 @@ class LegalProcess(Base):
     parties = relationship("ProcessParty", back_populates="process", cascade="all, delete-orphan")
     documents = relationship("ProcessDocument", back_populates="process", cascade="all, delete-orphan")
     negotiations = relationship("Negotiation", back_populates="legal_process")
+    transit_analysis = relationship("TransitAnalysis", back_populates="process", uselist=False, cascade="all, delete-orphan")
+
+class ProcessDistribution(Base):
+    __tablename__ = "process_distributions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    datetime = Column(DateTime(timezone=True), nullable=False)
+    orgao_julgador_id = Column(Integer, nullable=True)
+    orgao_julgador_nome = Column(String, nullable=True)
+
+    process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
+    process = relationship("LegalProcess", backref="distributions")
+
+class ProcessPartyDocument(Base):
+    __tablename__ = "process_party_documents"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    document_type = Column(String, nullable=True)
+    document_number = Column(String, nullable=True)
+
+    party_id = Column(UUID(as_uuid=True), ForeignKey("process_parties.id"), nullable=False)
+    party = relationship("ProcessParty", backref="documents")
+
 
 class ProcessMovement(Base):
     __tablename__ = "process_movements"
@@ -69,6 +115,9 @@ class ProcessParty(Base):
     document_type = Column(String, nullable=True) # CPF, CNPJ
     document_number = Column(String, nullable=True)
     representatives = Column(JSON, nullable=True) # Para armazenar advogados
+    ajg = Column(Boolean, nullable=True)       # assistenciaJudiciariaGratuita
+    sigilosa = Column(Boolean, nullable=True)  # sigilosa
+
     
     process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
     process = relationship("LegalProcess", back_populates="parties")
@@ -84,10 +133,45 @@ class ProcessDocument(Base):
     file_size = Column(Integer, nullable=True)
     text_content = Column(Text, nullable=True)
     binary_content = Column(LargeBinary, nullable=True) # ARMAZENA O ARQUIVO
+    sequence = Column(Integer, nullable=True)         # documentos[].sequencia
+    secrecy_level = Column(String, nullable=True)     # documentos[].nivelSigilo
+    origin_id = Column(String, nullable=True)         # documentos[].idOrigem
+    codex_id = Column(String, nullable=True)          # documentos[].idCodex
+    href_binary = Column(String, nullable=True)       # documentos[].hrefBinario
+    href_text = Column(String, nullable=True)         # documentos[].hrefTexto
+    type_code = Column(Integer, nullable=True)        # documentos[].tipo.codigo
+    type_name = Column(String, nullable=True)         # documentos[].tipo.nome
+    pages = Column(Integer, nullable=True)            # documentos[].arquivo.quantidadePaginas
+    images = Column(Integer, nullable=True)           # documentos[].arquivo.quantidadeImagens
+    text_size = Column(Integer, nullable=True)        # documentos[].arquivo.tamanhoTexto
     
     process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False)
     process = relationship("LegalProcess", back_populates="documents")
+    
+    __table_args__ = (
+        UniqueConstraint('process_id', 'sequence', name='uq_doc_process_sequence'),
+    )
 
+class TransitAnalysis(Base):
+    __tablename__ = "transit_analyses"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
+    
+    process_id = Column(UUID(as_uuid=True), ForeignKey("legal_processes.id"), nullable=False, unique=True, index=True)
+    
+    status = Column(String, index=True, nullable=False) # Ex: "Confirmado", "Não Transitado"
+    justification = Column(Text, nullable=True)
+    key_movements = Column(JSON, nullable=True)
+    transit_date = Column(DateTime(timezone=True), nullable=True) # Data extraída, se houver
+    analysis_raw_data = Column(JSON, nullable=True) # Guarda o JSON bruto da IA
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), default=func.now())
+
+    # Relação com o processo
+    process = relationship("LegalProcess", back_populates="transit_analysis")
+    
 class Negotiation(Base):
     __tablename__ = "negotiations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
@@ -117,7 +201,7 @@ class EmailThread(Base):
     last_email_date = Column(DateTime, index=True)
     participants = Column(JSON)
     
-    messages = relationship("EmailMessage", back_populates="thread", cascade="all, delete-orphan")
+    messages = relationship("EmailMessage", back_populates="thread", cascade="all, delete-orphan", order_by="EmailMessage.sent_datetime")
     analysis = relationship("Analysis", back_populates="email_thread", uselist=False, cascade="all, delete-orphan")
     negotiation = relationship("Negotiation", back_populates="email_thread", uselist=False, cascade="all, delete-orphan")
     judicial_analysis = relationship("JudicialAnalysis", back_populates="thread", cascade="all, delete-orphan")

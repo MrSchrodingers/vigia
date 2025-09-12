@@ -1,4 +1,5 @@
 import base64
+import copy
 import logging
 import os
 import json
@@ -458,6 +459,19 @@ class PjeApiClient:
             raise last_exc
         raise RuntimeError("Falha desconhecida na requisição")
 
+    async def search_processo(self, numero_processo: str) -> Dict[str, Any]:
+        """
+        Busca um processo pelo número e retorna a resposta completa da API,
+        que pode conter múltiplas tramitações.
+        """
+        numero = _normalize_numero(numero_processo)
+        resp = await self._request("GET", f"/processos", params={"numeroProcesso": numero})
+        resp.raise_for_status()
+        data = resp.json()
+        if not data or not isinstance(data.get("content"), list):
+            raise ValueError("API de busca não retornou uma lista de processos válida.")
+        return data
+    
     async def get_processo_details(self, numero_processo: str) -> Dict[str, Any]:
         numero = _normalize_numero(numero_processo)
         resp = await self._request("GET", f"/processos/{numero}")
@@ -607,8 +621,13 @@ class PjeWorker:
         # --- Etapa 1: Tenta buscar o binário primeiro (fonte da verdade) ---
         if href_binario:
             try:
-                timeout = httpx.Timeout(connect=20, read=self._deduz_read_timeout(tamanho_arquivo))
-                resp_bin = await api_client._request("GET", href_binario, timeout=timeout)
+                per_req_timeout = httpx.Timeout(
+                    connect=20,
+                    read=self._deduz_read_timeout(tamanho_arquivo),
+                    write=20,
+                    pool=60,
+                )
+                resp_bin = await api_client._request("GET", href_binario, timeout=per_req_timeout)
                 resp_bin.raise_for_status()
                 binario_final = resp_bin.content
                 logging.info(f"Sucesso ao baixar binário de '{doc.get('nome')}' ({len(binario_final) / 1024:.1f} KB).")
@@ -623,7 +642,6 @@ class PjeWorker:
         # --- Etapa 2: Se o binário falhou ou não existe, tenta o endpoint de texto ---
         if binario_final is None and href_texto:
             try:
-                timeout = httpx.Timeout(connect=20, read=self._deduz_read_timeout(tamanho_arquivo))
                 texto_final = await api_client.get_documento_texto(href_texto)
                 logging.info(f"Sucesso ao obter texto de '{doc.get('nome')}' via endpoint /texto.")
             except Exception as e:
@@ -700,7 +718,6 @@ class PjeWorker:
         return text.strip()
 
     def _extract_pdf_basic(self, data: bytes) -> str:
-        # Extração bem simples sem OCR (suficiente para muitos PDFs textos)
         try:
             sample = data.decode(errors="ignore")
             chunks = re.findall(r"[ -~\n\r\t]{50,}", sample)
@@ -708,7 +725,12 @@ class PjeWorker:
         except Exception:
             return ""
     
-    async def process_task(self, numero_processo: str) -> Dict[str, Any]:
+    async def process_task(self, numero_processo: str) -> list[Dict[str, Any]]:
+        """
+        Busca os detalhes de um processo, consolida todas as suas tramitações (instâncias),
+        e cria um objeto de processo "virtual" para cada uma, garantindo que a lista
+        de documentos seja compartilhada entre todas elas.
+        """
         async def get_token_from_redis() -> str:
             token = self.redis_conn.get("jusbr:bearer_token")
             if not token:
@@ -730,49 +752,100 @@ class PjeWorker:
         api_client = PjeApiClient(get_token_from_redis, refresh_token_via_worker)
         try:
             logging.info(f"Buscando detalhes do processo {numero_processo} via API.")
-            processo_details = await api_client.get_processo_details(numero_processo)
+            processo_principal = await api_client.get_processo_details(numero_processo)
 
-            documentos = (processo_details.get("tramitacaoAtual") or {}).get("documentos", []) or []
+            todas_as_tramitacoes = []
+            tramitacao_atual = processo_principal.get("tramitacaoAtual")
+            if tramitacao_atual:
+                todas_as_tramitacoes.append(tramitacao_atual)
             
-            # Limita o número de documentos para evitar sobrecarga
-            subset_docs = sorted(documentos, key=lambda d: d.get('dataHoraJuntada'), reverse=True)[:30]
-            logging.info(f"Processando os {len(subset_docs)} documentos mais recentes...")
+            tramitacoes_anteriores = processo_principal.get("tramitacoes", [])
+            if tramitacoes_anteriores:
+                todas_as_tramitacoes.extend(tramitacoes_anteriores)
 
-            sem = asyncio.Semaphore(5) # Limita a concorrência para não sobrecarregar a API
-
-            async def _fetch_one(doc: Dict[str, Any]) -> Dict[str, Any]:
-                async with sem:
-                    try:
-                        texto, binario = await self.get_documento_conteudo_for_doc(doc, api_client)
-                        return {
-                            "external_id": doc.get("idOrigem") or doc.get("idCodex"),
-                            "name": doc.get("nome"),
-                            "document_type": (doc.get("tipo") or {}).get("nome"),
-                            "juntada_date": doc.get("dataHoraJuntada"),
-                            "text_content": texto,
-                            "binary_content_b64": base64.b64encode(binario).decode('utf-8') if binario else None,
-                            "file_type": doc.get("arquivo", {}).get("tipo"),
-                            "file_size": doc.get("arquivo", {}).get("tamanho")
-                        }
-                    except Exception as e:
-                        logging.warning(f"Falha ao buscar conteúdo do doc '{doc.get('nome')}': {repr(e)}")
-                        return {"name": doc.get("nome"), "error": str(e)}
-
-            tasks = [_fetch_one(doc) for doc in subset_docs]
-            documentos_com_conteudo = await asyncio.gather(*tasks)
+            tramitacoes_unicas = {
+                (t.get("classe") or [{}])[0].get("codigo"): t
+                for t in todas_as_tramitacoes if (t.get("classe") or [{}])[0].get("codigo")
+            }
+            lista_final_tramitacoes = list(tramitacoes_unicas.values())
             
-            # Adiciona o novo campo ao JSON que será retornado
-            processo_details["documentos_com_conteudo"] = documentos_com_conteudo
+            documentos_metadados_completos = []
+            for tramitacao_candidata in todas_as_tramitacoes:
+                docs = (tramitacao_candidata or {}).get("documentos", [])
+                if docs:
+                    documentos_metadados_completos = docs
+                    logging.info(f"Lista de metadados de documentos encontrada na tramitação com classe '{ (tramitacao_candidata.get('classe') or [{}])[0].get('descricao') }'.")
+                    break
             
-            return processo_details
+            processos_para_retornar = []
+
+            if len(lista_final_tramitacoes) <= 1:
+                # Caso com instância única
+                instancia_unica = processo_principal
+                instancia_unica["grupo_incidencia"] = None
+                instancia_unica["numero_unico_incidencia"] = _normalize_numero(numero_processo)
+                instancia_unica["documentos"] = documentos_metadados_completos
+                processos_para_retornar.append(instancia_unica)
+            else:
+                # Caso com múltiplas instâncias
+                logging.info(f"Detectadas {len(lista_final_tramitacoes)} instâncias para o processo {numero_processo}. Desmembrando...")
+                grupo_id = _normalize_numero(numero_processo)
+
+                for tramitacao_especifica in lista_final_tramitacoes:
+                    processo_instancia = copy.deepcopy(processo_principal)
+                    processo_instancia["tramitacaoAtual"] = tramitacao_especifica
+                    
+                    classe_info = (tramitacao_especifica.get("classe") or [{}])[0]
+                    classe_codigo = classe_info.get("codigo", "geral")
+                    
+                    processo_instancia["grupo_incidencia"] = grupo_id
+                    processo_instancia["numero_unico_incidencia"] = f"{grupo_id}_{classe_codigo}"
+                    processo_instancia["descricao_incidencia"] = classe_info.get("descricao", "Instância Principal")
+                    processo_instancia["documentos"] = documentos_metadados_completos
+                    
+                    processos_para_retornar.append(processo_instancia)
+            
+            documentos_com_conteudo = []
+            if documentos_metadados_completos:
+                subset_docs = sorted(documentos_metadados_completos, key=lambda d: d.get('dataHoraJuntada'), reverse=True)[:30]
+                
+                logging.info(f"Processando os {len(subset_docs)} documentos mais recentes para o grupo {numero_processo}...")
+                sem = asyncio.Semaphore(5)
+
+                async def _fetch_one(doc: Dict[str, Any]) -> Dict[str, Any]:
+                    async with sem:
+                        try:
+                            texto, binario = await self.get_documento_conteudo_for_doc(doc, api_client)
+                            return {
+                                "external_id": doc.get("idOrigem") or doc.get("idCodex"),
+                                "name": doc.get("nome"),
+                                "document_type": (doc.get("tipo") or {}).get("nome"),
+                                "juntada_date": doc.get("dataHoraJuntada"),
+                                "text_content": texto,
+                                "binary_content_b64": base64.b64encode(binario).decode('utf-8') if binario else None,
+                                "file_type": doc.get("arquivo", {}).get("tipo"),
+                                "file_size": doc.get("arquivo", {}).get("tamanho")
+                            }
+                        except Exception as e:
+                            logging.warning(f"Falha ao buscar conteúdo do doc '{doc.get('nome')}': {repr(e)}")
+                            return {"name": doc.get("nome"), "error": str(e)}
+
+                tasks = [_fetch_one(doc) for doc in subset_docs]
+                documentos_com_conteudo = await asyncio.gather(*tasks)
+
+            # Adiciona a lista de documentos com conteúdo a TODAS as instâncias geradas
+            for proc in processos_para_retornar:
+                proc["documentos_com_conteudo"] = documentos_com_conteudo
+            
+            return processos_para_retornar
 
         except httpx.HTTPStatusError as e:
             status = e.response.status_code if e.response is not None else "?"
             logging.error(f"HTTP {status} ao consultar {numero_processo}: {e}", exc_info=False)
-            return {"erro": f"HTTP {status} ao consultar o processo."}
+            return [{"erro": f"HTTP {status} ao consultar o processo."}]
         except Exception as e:
-            logging.error(f"Erro inesperado ao processar {numero_processo}: {e}", exc_info=False)
-            return {"erro": str(e)}
+            logging.error(f"Erro inesperado ao processar {numero_processo}: {e}", exc_info=True)
+            return [{"erro": str(e)}]
         finally:
             await api_client.close()
 

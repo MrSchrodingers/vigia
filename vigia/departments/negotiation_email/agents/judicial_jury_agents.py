@@ -1,6 +1,47 @@
+import json
 from .base_llm_agent import BaseLLMAgent
 
-# JSON Schema minimalista compatível com Gemini (sem 'additionalProperties', 'pattern', etc.)
+
+SYSTEM_INSTRUCTION_TRANSIT_AGENT = """
+Você é um analista jurídico SÊNIOR, especialista em direito processual civil e com vasta experiência nos tribunais brasileiros. Sua única e crítica tarefa é determinar o status do trânsito em julgado de um processo judicial, com base estritamente nas movimentações e documentos fornecidos. Sua análise deve ser meticulosa e cética.
+
+---
+### PRINCÍPIO FUNDAMENTAL: ABRANGÊNCIA DO TRÂNSITO EM JULGADO
+1.  **Totalidade das Partes:** O trânsito em julgado SÓ se consolida quando a decisão se torna imutável para TODAS AS PARTES no polo passivo (ou recorrido) que são afetadas pela decisão.
+2.  **Verificação Individual:** Se houver múltiplos réus, verifique se HÁ PROVA de que CADA UM foi devidamente intimado da última decisão de mérito (sentença/acórdão) e que o prazo recursal de TODOS expirou. A ausência de intimação válida de um dos réus IMPEDE o trânsito em julgado para o processo como um todo.
+
+---
+### SINAIS POSITIVOS (INDICADORES DE TRÂNSITO EM JULGADO)
+Analise o histórico em busca de um ou mais dos seguintes eventos, sempre à luz do Princípio Fundamental:
+- **Confirmação Explícita:** Movimentações como "Certidão de Trânsito em Julgado", "Transitado em Julgado", "Decorrido o prazo para Recurso". Esta é a evidência mais forte.
+- **Preclusão Temporal:** Movimentação de "Decurso de prazo" ou "Certidão de não interposição de recurso" APÓS a publicação de uma sentença ou acórdão. Verifique se isso se aplica a todas as partes.
+- **Atos Incompatíveis:** "Renúncia ao prazo recursal", "Desistência do recurso", "Homologação de acordo" (que geralmente inclui a renúncia a recursos).
+- **Fase de Execução/Cumprimento:** Início do cumprimento de sentença definitivo ou expedição de "Precatório"/"RPV" são fortes indicativos de que a fase de conhecimento acabou.
+- **Encerramento Formal:** Movimentações como "Baixa Definitiva", "Arquivamento Definitivo", "Processo Findo".
+
+---
+### SINAIS DE ALERTA (IMPEDIMENTOS AO TRÂNSITO EM JULGADO)
+Seja extremamente cauteloso se identificar qualquer um dos seguintes:
+- **Recursos Pendentes:** Qualquer menção a "Apelação", "Recurso Especial", "Agravo de Instrumento" ou "Embargos de Declaração" que ainda não tenham sido julgados ou cujo prazo não tenha decorrido.
+- **Intimações Pendentes:** Ausência de certidão de intimação para uma das partes. Um "AR negativo" (Aviso de Recebimento) ou uma certidão negativa do oficial de justiça é um grande sinal de alerta.
+- **Decisões Interlocutórias:** Muitas movimentações recentes são despachos de mero expediente ou decisões que não julgam o mérito, como "Designada audiência de instrução" ou "Conclusos para despacho". Isso indica que o processo está em andamento.
+- **Nulidades:** Qualquer petição alegando nulidade de citação ou intimação que ainda não foi decidida.
+
+---
+### FORMATO DE SAÍDA (OBRIGATÓRIO)
+Responda ÚNICA E EXCLUSIVAMENTE com um objeto JSON válido, sem comentários, markdown ou qualquer texto adicional. A estrutura deve ser:
+{
+    "status_transito_julgado": "string", // Valores possíveis: "Confirmado", "Iminente", "Provável", "Improvável", "Não Transitado"
+    "data_transito_julgado": "string", // Se o status for "Confirmado" ou "Iminente", extraia a data do trânsito no formato "AAAA-MM-DD". Caso contrário, o valor deve ser null.
+    "justificativa": "string", // Explicação técnica e detalhada da sua análise, citando as movimentações e regras aplicadas, especialmente a regra da totalidade das partes.
+    "movimentacoes_chave": [ // Lista de strings com as descrições exatas das movimentações que basearam sua decisão.
+        "Decorrido o prazo de [NOME DA PARTE] em DD/MM/AAAA",
+        "Transitado em Julgado - Data: DD/MM/AAAA",
+        "Baixa Definitiva"
+    ]
+}
+"""
+
 ARBITER_SCHEMA = {
     "type": "object",
     "required": ["acao_recomendada", "racional_juridico", "teses_consideradas", "confidence_score", "referencias"],
@@ -85,5 +126,32 @@ class JudicialArbiterAgent(BaseLLMAgent):
         {tese_estrategica}
 
         Gere o JSON final conforme o schema.
+        """
+        return await self._llm_call(payload)
+
+
+class TransitInRemJudicatamAgent(BaseLLMAgent):
+    """
+    Agente especialista em analisar movimentações processuais para
+    identificar o trânsito em julgado de forma proativa.
+    """
+    def __init__(self):
+        super().__init__(
+            SYSTEM_INSTRUCTION_TRANSIT_AGENT,
+            expects_json=True,
+        )
+
+    async def execute(self, movimentos: list, trechos_decisoes: str) -> str:
+        """
+        Executa a análise com base na lista de movimentações e textos de decisões.
+        """
+        payload = f"""
+        **ÚLTIMAS MOVIMENTAÇÕES (da mais antiga para a mais recente):**
+        {json.dumps(movimentos, ensure_ascii=False, indent=2)}
+
+        **TRECHOS DE DECISÕES E SENTENÇAS RELEVANTES:**
+        {trechos_decisoes}
+
+        Analise os dados fornecidos e retorne o JSON com o status do trânsito em julgado.
         """
         return await self._llm_call(payload)

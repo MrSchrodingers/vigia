@@ -3,8 +3,11 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from vigia.api import schemas, dependencies
+from vigia.config import settings
 from vigia.services import crud
 from db.models import User, Negotiation, EmailThread
+
+ORG_DOMAINS = set(getattr(settings, "ORG_DOMAINS", ["amaralvasconcellos.com.br","pavcob.com.br"]))
 
 router = APIRouter(
     prefix="/api/negotiations",
@@ -49,17 +52,56 @@ def read_negotiations(
         })
     return response_data
 
+def _role_from_sender(sender: str) -> str:
+    s = (sender or "").lower()
+    return "agent" if any(d in s for d in ORG_DOMAINS) else "client"
 
 @router.get("/{negotiation_id}", response_model=schemas.NegotiationDetails)
 def read_negotiation_details(negotiation_id: str, db: Session = Depends(dependencies.get_db)):
-    # Usamos joinedload para buscar a thread e as mensagens de uma só vez (mais eficiente)
-    db_negotiation = db.query(Negotiation).options(
+    db_neg = db.query(Negotiation).options(
         joinedload(Negotiation.email_thread).joinedload(EmailThread.messages)
     ).filter(Negotiation.id == negotiation_id).first()
 
-    if db_negotiation is None:
+    if db_neg is None:
         raise HTTPException(status_code=404, detail="Negotiation not found")
-    
-    # O schema Pydantic agora cuida do parsing de cada mensagem automaticamente
-    # graças à função from_orm que modificamos.
-    return db_negotiation
+
+    # Serializa mensagens (limpando HTML)
+    msgs: List[schemas.Message] = []
+    if db_neg.email_thread and db_neg.email_thread.messages:
+        for m in db_neg.email_thread.messages:
+            msgs.append(
+                schemas.Message(
+                    id=m.id,
+                    sender=m.sender or "",
+                    content=schemas.parse_email_html(m.body),
+                    timestamp=m.sent_datetime,
+                )
+            )
+
+    # Thread “leve” (sem relações para evitar recursion / tipos desconhecidos)
+    thread_lite = schemas.EmailThreadLite.model_validate(db_neg.email_thread) if db_neg.email_thread else None
+
+    # Derive alguns campos que você já usa na lista
+    participants = [p for p in (db_neg.email_thread.participants or []) if p]
+    client_name = "Cliente Desconhecido"
+    for p in participants:
+        low = p.lower()
+        if not any(d in low for d in ORG_DOMAINS) and "@" in p:
+            client_name = p.split("@")[0].replace(".", " ").title()
+            break
+
+    details = schemas.NegotiationDetails(
+        id=db_neg.id,
+        status=db_neg.status,
+        priority=db_neg.priority,
+        debt_value=db_neg.debt_value,
+        assigned_agent_id=db_neg.assigned_agent_id,
+        last_message=None,
+        last_message_time=None,
+        message_count=len(msgs),
+        client_name=client_name,
+        process_number=db_neg.legal_process.process_number if db_neg.legal_process else "N/A",
+        messages=msgs,
+        email_thread=thread_lite,
+    )
+    return details
