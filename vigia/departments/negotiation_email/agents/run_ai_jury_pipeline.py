@@ -1,14 +1,21 @@
-from sqlalchemy.orm import Session
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy.orm import Session
 
 from db import models
+from vigia.departments.negotiation_email.agents.judicial_jury_agents import (
+    ARBITER_SCHEMA,
+)
 from vigia.departments.negotiation_email.core.orchestrator import HTML_SECTION_BORDER
-from vigia.services import llm_service
-from vigia.departments.negotiation_email.utils.jusbr_utils import build_timeline, build_evidence_index
 from vigia.departments.negotiation_email.utils import clean_html_body
-from vigia.departments.negotiation_email.agents.judicial_jury_agents import ARBITER_SCHEMA
+from vigia.departments.negotiation_email.utils.jusbr_utils import (
+    build_evidence_index,
+    build_timeline,
+)
+from vigia.services import llm_service
+
 
 # -------------------------------------------------------------------------
 # Helpers
@@ -18,51 +25,58 @@ def _format_summary_for_note(summary_data: Dict[str, Any]) -> str:
     if not summary_data or "erro" in summary_data:
         return "<i>Erro ao gerar o sumário da análise.</i>"
 
-    parts = [f'<div {HTML_SECTION_BORDER}><h2>📝 Resumo da Análise da Negociação</h2></div>']
+    parts = [
+        f"<div {HTML_SECTION_BORDER}><h2>📝 Resumo da Análise da Negociação</h2></div>"
+    ]
 
     # Resumo executivo
     se = summary_data.get("sumario_executivo")
     if se:
-        parts.append(f'<div {HTML_SECTION_BORDER}><h4>Resumo Executivo</h4><p>{se}</p></div>')
+        parts.append(
+            f"<div {HTML_SECTION_BORDER}><h4>Resumo Executivo</h4><p>{se}</p></div>"
+        )
 
     # Status
     status_info = summary_data.get("status_e_proximos_passos") or {}
     if status_info.get("status_atual"):
-        parts.append(f'<div {HTML_SECTION_BORDER}><h4>Status Atual</h4><p><strong>{status_info["status_atual"]}</strong></p></div>')
+        parts.append(
+            f"<div {HTML_SECTION_BORDER}><h4>Status Atual</h4><p><strong>{status_info['status_atual']}</strong></p></div>"
+        )
 
     # Histórico
     historico = summary_data.get("historico_negociacao") or {}
     if historico:
-        hp = [f'<div {HTML_SECTION_BORDER}><h4>Histórico da Negociação</h4>']
+        hp = [f"<div {HTML_SECTION_BORDER}><h4>Histórico da Negociação</h4>"]
         if historico.get("fluxo"):
-            hp.append(f'<p>{historico["fluxo"]}</p>')
+            hp.append(f"<p>{historico['fluxo']}</p>")
 
         # Cliente
         cli_args = historico.get("argumentos_cliente")
         if cli_args:
-            hp.append('<strong>Argumentos do Cliente:</strong>')
+            hp.append("<strong>Argumentos do Cliente:</strong>")
             if isinstance(cli_args, list):
-                hp.append('<ul>')
-                hp.extend(f'<li>{a}</li>' for a in cli_args)
-                hp.append('</ul>')
+                hp.append("<ul>")
+                hp.extend(f"<li>{a}</li>" for a in cli_args)
+                hp.append("</ul>")
             else:
-                hp.append(f'<p><i>{cli_args}</i></p>')
+                hp.append(f"<p><i>{cli_args}</i></p>")
 
         # Internos
         int_args = historico.get("argumentos_internos")
         if int_args:
-            hp.append('<br><strong>Nossos Argumentos:</strong>')
+            hp.append("<br><strong>Nossos Argumentos:</strong>")
             if isinstance(int_args, list):
-                hp.append('<ul>')
-                hp.extend(f'<li>{a}</li>' for a in int_args)
-                hp.append('</ul>')
+                hp.append("<ul>")
+                hp.extend(f"<li>{a}</li>" for a in int_args)
+                hp.append("</ul>")
             else:
-                hp.append(f'<p><i>{int_args}</i></p>')
+                hp.append(f"<p><i>{int_args}</i></p>")
 
-        hp.append('</div>')
+        hp.append("</div>")
         parts.append("".join(hp))
 
     return "".join(parts)
+
 
 def _serialize_doc_for_context(doc: models.ProcessDocument) -> Dict[str, Any]:
     return {
@@ -74,8 +88,11 @@ def _serialize_doc_for_context(doc: models.ProcessDocument) -> Dict[str, Any]:
         "file_size": doc.file_size,
         "href_text": getattr(doc, "href_text", None),
         "href_binary": getattr(doc, "href_binary", None),
-        "text_excerpt": (clean_html_body(doc.text_content)[:4000] if doc.text_content else None),
+        "text_excerpt": (
+            clean_html_body(doc.text_content)[:4000] if doc.text_content else None
+        ),
     }
+
 
 def _find_next_hearing(movements: List[models.ProcessMovement]) -> Optional[str]:
     # Heurística simples: busca a movimentação com "Audiência" mais recente
@@ -85,7 +102,12 @@ def _find_next_hearing(movements: List[models.ProcessMovement]) -> Optional[str]
             return m.description
     return None
 
-def _small_process_payload(proc: models.LegalProcess, docs: List[models.ProcessDocument], movs: List[models.ProcessMovement]) -> Dict[str, Any]:
+
+def _small_process_payload(
+    proc: models.LegalProcess,
+    docs: List[models.ProcessDocument],
+    movs: List[models.ProcessMovement],
+) -> Dict[str, Any]:
     return {
         "process_number": proc.process_number,
         "classe_processual": getattr(proc, "classe_processual", None),
@@ -100,8 +122,11 @@ def _small_process_payload(proc: models.LegalProcess, docs: List[models.ProcessD
                 "document_type": p.document_type,
                 "document_number": p.document_number,
                 "ajg": getattr(p, "ajg", None),
-            } for p in (proc.parties or [])
-        ] if hasattr(proc, "parties") and proc.parties else None,
+            }
+            for p in (proc.parties or [])
+        ]
+        if hasattr(proc, "parties") and proc.parties
+        else None,
         "next_hearing_hint": _find_next_hearing(movs),
         "documents_summary": [
             {
@@ -109,10 +134,12 @@ def _small_process_payload(proc: models.LegalProcess, docs: List[models.ProcessD
                 "type": d.document_type,
                 "has_text": bool(d.text_content),
                 "size": d.file_size,
-                "juntada_date": d.juntada_date.isoformat() if d.juntada_date else None
-            } for d in docs[:20]
+                "juntada_date": d.juntada_date.isoformat() if d.juntada_date else None,
+            }
+            for d in docs[:20]
         ],
     }
+
 
 async def _ensure_json(obj_or_text: Any) -> Optional[Dict[str, Any]]:
     """Garante JSON usando o mesmo padrão já usado por você (expects_json=True)."""
@@ -123,16 +150,27 @@ async def _ensure_json(obj_or_text: Any) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
+
 # -------------------------------------------------------------------------
 # Pipeline Principal
 # -------------------------------------------------------------------------
-async def run_ai_jury_pipeline(proc: models.LegalProcess, db: Session) -> Dict[str, Any]:
+async def run_ai_jury_pipeline(
+    proc: models.LegalProcess, db: Session
+) -> Dict[str, Any]:
     """Roda Resumo + Júri e retorna TODOS os artefatos gerados."""
     # Coleta de dados do banco
-    docs = db.query(models.ProcessDocument).filter(models.ProcessDocument.process_id == proc.id) \
-            .order_by(models.ProcessDocument.juntada_date.asc().nullsfirst()).all()
-    movs = db.query(models.ProcessMovement).filter(models.ProcessMovement.process_id == proc.id) \
-            .order_by(models.ProcessMovement.date.asc().nullsfirst()).all()
+    docs = (
+        db.query(models.ProcessDocument)
+        .filter(models.ProcessDocument.process_id == proc.id)
+        .order_by(models.ProcessDocument.juntada_date.asc().nullsfirst())
+        .all()
+    )
+    movs = (
+        db.query(models.ProcessMovement)
+        .filter(models.ProcessMovement.process_id == proc.id)
+        .order_by(models.ProcessMovement.date.asc().nullsfirst())
+        .all()
+    )
 
     # Insumos principais
     raw = getattr(proc, "raw_data", None)
@@ -147,12 +185,32 @@ async def run_ai_jury_pipeline(proc: models.LegalProcess, db: Session) -> Dict[s
     timeline = build_timeline(raw.get("tramitacaoAtual", raw))
 
     # build_evidence_index espera um dict com "documentos" e (opcional) "timeline_pre"
-    evidence_index = build_evidence_index({
-        "documentos": [_serialize_doc_for_context(d) for d in docs],
-        "timeline_pre": timeline,
-    })
+    evidence_index = build_evidence_index(
+        {
+            "documentos": [_serialize_doc_for_context(d) for d in docs],
+            "timeline_pre": timeline,
+        }
+    )
 
     small_payload = _small_process_payload(proc, docs, movs)
+
+    # Carrega os dados do CPJ associados a este processo
+    cpj_context_data = None
+    cpj_data = (
+        db.query(models.CPJProcess)
+        .filter(models.CPJProcess.legal_process_id == proc.id)
+        .first()
+    )
+    if cpj_data:
+        cpj_context_data = {
+            "ficha": cpj_data.ficha,
+            "incidente": cpj_data.incidente,
+            "juizo": cpj_data.juizo,
+            "valor_causa_cpj": cpj_data.valor_causa,
+            "data_entrada_cpj": cpj_data.entrada_date.isoformat()
+            if cpj_data.entrada_date
+            else None,
+        }
 
     # ================== 1) Contexto Legal Sintetizado ==================
     ctx_prompt = f"""
@@ -169,7 +227,8 @@ produza um CONTEXTO LEGAL em JSON (sem markdown), com os campos:
   "marcos_procedimentais": []
 }}
 Entrada:
-- Processo: {json.dumps(small_payload, ensure_ascii=False)}
+- Dados do Processo (Vigia): {json.dumps(small_payload, ensure_ascii=False)}
+- Dados do Processo (CPJ): {json.dumps(cpj_context_data, ensure_ascii=False)}
 - Timeline: {json.dumps(timeline, ensure_ascii=False)}
 - EvidenceIndex: {json.dumps(evidence_index, ensure_ascii=False)}
 """

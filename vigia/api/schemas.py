@@ -1,8 +1,10 @@
-from bs4 import BeautifulSoup
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_serializer
-from typing import Any, List, Optional
 import datetime as dt
 import uuid
+from typing import Any, List, Optional
+
+from bs4 import BeautifulSoup
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer
+
 
 def parse_email_html(html_body: Optional[str]) -> str:
     """
@@ -10,42 +12,49 @@ def parse_email_html(html_body: Optional[str]) -> str:
     """
     if not html_body:
         return ""
-    
-    soup = BeautifulSoup(html_body, 'html.parser')
-    
+
+    soup = BeautifulSoup(html_body, "html.parser")
+
     # Remove blocos de resposta e assinaturas comuns do Outlook/Gmail
-    for block in soup.find_all("div", {"id": lambda x: x and x.startswith('divRplyFwdMsg')}):
+    for block in soup.find_all(
+        "div", {"id": lambda x: x and x.startswith("divRplyFwdMsg")}
+    ):
         block.decompose()
     for blockquote in soup.find_all("blockquote"):
         blockquote.decompose()
-    
+
     # Remove quebras de linha excessivas e obtém o texto
-    text = soup.get_text(separator='\n', strip=True)
-    
+    text = soup.get_text(separator="\n", strip=True)
+
     # Tenta remover o histórico de e-mails (heurística)
-    lines = text.split('\n')
+    lines = text.split("\n")
     clean_lines = []
     for line in lines:
-        if line.strip().lower().startswith(('de:', 'from:', 'enviada em:', 'sent:')):
+        if line.strip().lower().startswith(("de:", "from:", "enviada em:", "sent:")):
             break
         clean_lines.append(line)
-        
-    return '\n'.join(clean_lines).strip()
+
+    return "\n".join(clean_lines).strip()
+
 
 # --- Base Schemas ---
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class TokenData(BaseModel):
     email: Optional[str] = None
+
 
 # --- User Schemas ---
 class UserBase(BaseModel):
     email: EmailStr
 
+
 class UserCreate(UserBase):
     password: str
+
 
 class User(UserBase):
     id: uuid.UUID
@@ -54,15 +63,17 @@ class User(UserBase):
     class Config:
         from_attributes = True
 
+
 # --- Message & Negotiation Schemas ---
 class Message(BaseModel):
     id: uuid.UUID
     sender: str
-    content: str 
-    timestamp: dt.datetime 
+    content: str
+    timestamp: dt.datetime
 
     class Config:
         from_attributes = True
+
 
 class EmailThreadLite(BaseModel):
     id: uuid.UUID
@@ -73,7 +84,8 @@ class EmailThreadLite(BaseModel):
 
     class Config:
         from_attributes = True
-        
+
+
 class Negotiation(BaseModel):
     id: uuid.UUID
     status: str
@@ -85,15 +97,18 @@ class Negotiation(BaseModel):
     message_count: int = 0
     client_name: Optional[str] = None
     process_number: Optional[str] = None
-    
+
     class Config:
         from_attributes = True
+
 
 class NegotiationDetails(Negotiation):
     messages: List[Message] = []
     email_thread: Optional[EmailThreadLite] = None
 
+
 # --- Legal Process Schemas ---
+
 
 class ProcessDistribution(BaseModel):
     id: uuid.UUID
@@ -114,6 +129,7 @@ class ProcessDistribution(BaseModel):
     def _ser_dt(self, v: Optional[dt.datetime], _info):
         return v.isoformat() if v else None
 
+
 class ProcessPartyDocument(BaseModel):
     id: uuid.UUID
     document_type: Optional[str] = None
@@ -122,6 +138,7 @@ class ProcessPartyDocument(BaseModel):
     class Config:
         from_attributes = True
 
+
 class ProcessMovement(BaseModel):
     id: uuid.UUID
     date: dt.datetime
@@ -129,6 +146,7 @@ class ProcessMovement(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class ProcessParty(BaseModel):
     id: uuid.UUID
@@ -145,6 +163,7 @@ class ProcessParty(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class ProcessDocument(BaseModel):
     id: uuid.UUID
@@ -177,6 +196,7 @@ class ProcessDocument(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class LegalProcess(BaseModel):
     id: uuid.UUID
@@ -223,6 +243,7 @@ class LegalProcess(BaseModel):
     class Config:
         from_attributes = True
 
+
 class LegalProcessLite(BaseModel):
     id: uuid.UUID
     process_number: str
@@ -230,28 +251,90 @@ class LegalProcessLite(BaseModel):
     assunto: Optional[str] = None
     valor_causa: Optional[float] = None
     tribunal_nome: Optional[str] = None
-    tribunal: Optional[str] = None 
+    tribunal: Optional[str] = None
     degree_nome: Optional[str] = None
 
     class Config:
         from_attributes = True
 
+
 class TransitAnalysis(BaseModel):
     id: uuid.UUID
     process_id: uuid.UUID
+
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+
     status: str
     justification: Optional[str] = None
-    key_movements: Optional[List[str]] = None 
+    key_movements: Optional[List[str]] = None
     transit_date: Optional[dt.datetime] = None
     updated_at: dt.datetime
-    analysis_raw_data: Optional[dict] = None 
-    created_at: dt.datetime 
+    analysis_raw_data: Optional[dict] = None
+    created_at: dt.datetime
 
-    process: Optional[LegalProcessLite] = None 
+    process: Optional[LegalProcessLite] = None
 
     class Config:
         from_attributes = True
-        
+
+
+class PostSentenceAnalysis(BaseModel):
+    id: uuid.UUID
+    process_id: uuid.UUID
+
+    category: str
+    subcategory: Optional[str] = None
+    status: str
+    justification: Optional[str] = None
+    key_movements: Optional[List[str]] = None
+    appeal_date: Optional[dt.datetime] = None
+    updated_at: dt.datetime
+    created_at: dt.datetime
+    analysis_raw_data: Optional[dict] = None
+
+    process: Optional[LegalProcessLite] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CPJParty(BaseModel):
+    qualificacao: int
+    nome: str
+    documento: Optional[str]
+    tipo_pessoa: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+class CPJMovement(BaseModel):
+    data_andamento: Optional[dt.datetime]
+    texto_andamento: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+class CPJProcessDetails(BaseModel):
+    id: uuid.UUID
+    legal_process_id: uuid.UUID
+    cpj_cod_processo: int
+    ficha: Optional[str]
+    incidente: Optional[int]
+    numero_processo: Optional[str]
+    juizo: Optional[str]
+    valor_causa: Optional[float]
+    entrada_date: Optional[dt.datetime]
+    last_update_cpj: Optional[dt.datetime]
+    parties: List[CPJParty] = []
+    movements: List[CPJMovement] = []
+
+    class Config:
+        orm_mode = True
+
+
 class LegalProcessDetails(LegalProcess):
     movements: List[ProcessMovement] = []
     parties: List[ProcessParty] = []
@@ -263,15 +346,18 @@ class LegalProcessDetails(LegalProcess):
 
     transit_analysis: Optional[TransitAnalysis] = None
 
-    class Config: 
+    class Config:
         from_attributes = True
+
 
 # --- Chat Schemas ---
 class ChatMessageBase(BaseModel):
     content: str
 
+
 class ChatMessageCreate(ChatMessageBase):
     pass
+
 
 class ChatMessage(ChatMessageBase):
     id: uuid.UUID
@@ -280,6 +366,7 @@ class ChatMessage(ChatMessageBase):
 
     class Config:
         from_attributes = True
+
 
 class ChatSession(BaseModel):
     id: uuid.UUID
@@ -290,13 +377,16 @@ class ChatSession(BaseModel):
     class Config:
         from_attributes = True
 
+
 class ChatSessionDetails(ChatSession):
     messages: List[ChatMessage] = []
-    
+
+
 class ActionResponse(BaseModel):
     status: str
     message: Optional[str] = None
     data: Optional[Any] = None
+
 
 class JusbrStatus(BaseModel):
     is_active: bool

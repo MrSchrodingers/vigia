@@ -21,6 +21,7 @@ from .formal_summarizer_agent import FormalSummarizerAgent
 from .legal_context_agent import LegalContextSynthesizerAgent
 from ..agents.judicial_jury_agents import (
     ConservativeAdvocateAgent,
+    PostSentenceAgent,
     StrategicAdvocateAgent,
     JudicialArbiterAgent,
     TransitInRemJudicatamAgent
@@ -53,6 +54,7 @@ conservative_advocate_agent = ConservativeAdvocateAgent()
 strategic_advocate_agent = StrategicAdvocateAgent()
 judicial_arbiter_agent = JudicialArbiterAgent()
 transit_agent = TransitInRemJudicatamAgent()
+post_sentence_agent = PostSentenceAgent()
 
 __all__ = [
     "context_miner_agent",
@@ -70,5 +72,6 @@ __all__ = [
     "conservative_advocate_agent",
     "strategic_advocate_agent",
     "judicial_arbiter_agent",
-    "transit_agent"
+    "transit_agent",
+    "post_sentence_agent",
 ]

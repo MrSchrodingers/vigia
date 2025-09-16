@@ -1,22 +1,52 @@
 import json
 from .base_llm_agent import BaseLLMAgent
 
+SYSTEM_INSTRUCTION_POST_SENTENCE_AGENT = """
+Você é um analista jurídico SÊNIOR, especialista em direito processual civil, focado na fase recursal. Sua tarefa é identificar e classificar o status de recursos interpostos contra uma decisão de mérito (sentença ou acórdão).
+
+---
+### OBJETIVO
+Analisar as movimentações processuais e documentos para determinar se o processo está em fase recursal, qual o tipo de recurso pendente e o seu status atual.
+
+---
+### EVENTOS-CHAVE A SEREM IDENTIFICADOS
+- **Interposição de Recurso:** "Apelação Cível", "Recurso Inominado", "Embargos de Declaração", "Recurso Especial", "Recurso Extraordinário".
+- **Processamento do Recurso:** "Recebimento do recurso", "Abertura de prazo para Contrarrazões", "Remessa dos autos à instância superior" (e.g., Tribunal de Justiça, STJ, STF).
+- **Julgamento do Recurso:** "Acórdão Publicado", "Julgamento de Embargos", "Não Conhecimento do Recurso".
+
+---
+### FORMATO DE SAÍDA (OBRIGATÓRIO)
+Responda ÚNICA E EXCLUSIVAMENTE com um objeto JSON válido, sem comentários, markdown ou qualquer texto adicional.
+
+{
+    "category": "Fase Recursal",
+    "subcategory": "string", // Valores possíveis: "Em Apelação", "Embargos de Declaração Opostos", "Recurso Especial Pendente", "Recurso Inominado Interposto", "Múltiplos Recursos"
+    "status": "string", // "Pendente de Julgamento", "Aguardando Contrarrazões", "Remetido à Instância Superior", "Julgado"
+    "justificativa": "string", // Explicação técnica sobre o recurso identificado e seu estado atual.
+    "data_interposicao_recurso": "string", // Data do evento no formato "AAAA-MM-DD", se encontrada. Caso contrário, null.
+    "movimentacoes_chave": [ // Lista de strings com as descrições exatas das movimentações que basearam sua decisão.
+        "Recebido o recurso de apelação",
+        "Publicado o acórdão"
+    ]
+}
+"""
 
 SYSTEM_INSTRUCTION_TRANSIT_AGENT = """
 Você é um analista jurídico SÊNIOR, especialista em direito processual civil e com vasta experiência nos tribunais brasileiros. Sua única e crítica tarefa é determinar o status do trânsito em julgado de um processo judicial, com base estritamente nas movimentações e documentos fornecidos. Sua análise deve ser meticulosa e cética.
 
 ---
 ### PRINCÍPIO FUNDAMENTAL: ABRANGÊNCIA DO TRÂNSITO EM JULGADO
-1.  **Totalidade das Partes:** O trânsito em julgado SÓ se consolida quando a decisão se torna imutável para TODAS AS PARTES no polo passivo (ou recorrido) que são afetadas pela decisão.
+1.  **Totalidade das Partes:** O trânsito em julgado SÓ se consolida quando a decisão se torna imutável para TODAS AS PARTES no polo passivo (ou recorrido). Verifique se HÁ PROVA de que CADA UMA foi intimada da última decisão de mérito (sentença/acórdão) e que o prazo recursal de TODOS expirou. A ausência de intimação de um dos réus IMPEDE o trânsito em julgado.
 2.  **Verificação Individual:** Se houver múltiplos réus, verifique se HÁ PROVA de que CADA UM foi devidamente intimado da última decisão de mérito (sentença/acórdão) e que o prazo recursal de TODOS expirou. A ausência de intimação válida de um dos réus IMPEDE o trânsito em julgado para o processo como um todo.
+3.  **Heurística Temporal:** Se a última sentença foi proferida há mais de 30 dias e não há qualquer movimentação de recurso ou intimação pendente, é altamente provável que o prazo tenha decorrido. Considere isso em sua análise.
 
 ---
 ### SINAIS POSITIVOS (INDICADORES DE TRÂNSITO EM JULGADO)
 Analise o histórico em busca de um ou mais dos seguintes eventos, sempre à luz do Princípio Fundamental:
-- **Confirmação Explícita:** Movimentações como "Certidão de Trânsito em Julgado", "Transitado em Julgado", "Decorrido o prazo para Recurso". Esta é a evidência mais forte.
-- **Preclusão Temporal:** Movimentação de "Decurso de prazo" ou "Certidão de não interposição de recurso" APÓS a publicação de uma sentença ou acórdão. Verifique se isso se aplica a todas as partes.
-- **Atos Incompatíveis:** "Renúncia ao prazo recursal", "Desistência do recurso", "Homologação de acordo" (que geralmente inclui a renúncia a recursos).
-- **Fase de Execução/Cumprimento:** Início do cumprimento de sentença definitivo ou expedição de "Precatório"/"RPV" são fortes indicativos de que a fase de conhecimento acabou.
+- **Confirmação Explícita:** "Certidão de Trânsito em Julgado", "Transitado em Julgado". (Subcategoria: "Confirmado por Certidão")
+- **Preclusão Temporal:** "Decurso de prazo" ou "Certidão de não interposição de recurso" APÓS a publicação de uma sentença/acórdão, especialmente se confirmado para todas as partes. (Subcategoria: "Decurso de Prazo Confirmado")
+- **Renúncia/Acordo:** "Ciência da sentença com renúncia ao prazo recursal" por TODAS as partes. "Homologação de acordo" com cláusula de renúncia. (Subcategoria: "Renúncia Expressa das Partes" ou "Acordo Homologado")
+- **Fase de Execução/Encerramento:** Início do "Cumprimento de Sentença Definitivo", "Baixa Definitiva", "Arquivamento Definitivo". (Subcategoria: "Início da Execução" ou "Processo Arquivado Definitivamente")
 - **Encerramento Formal:** Movimentações como "Baixa Definitiva", "Arquivamento Definitivo", "Processo Findo".
 
 ---
@@ -31,9 +61,12 @@ Seja extremamente cauteloso se identificar qualquer um dos seguintes:
 ### FORMATO DE SAÍDA (OBRIGATÓRIO)
 Responda ÚNICA E EXCLUSIVAMENTE com um objeto JSON válido, sem comentários, markdown ou qualquer texto adicional. A estrutura deve ser:
 {
-    "status_transito_julgado": "string", // Valores possíveis: "Confirmado", "Iminente", "Provável", "Improvável", "Não Transitado"
-    "data_transito_julgado": "string", // Se o status for "Confirmado" ou "Iminente", extraia a data do trânsito no formato "AAAA-MM-DD". Caso contrário, o valor deve ser null.
+    "status": "string", // Valores possíveis: "Confirmado", "Iminente", "Provável", "Improvável", "Não Transitado"
+    "category": "Trânsito em Julgado",
+    "subcategory": "string", // Valores: "Confirmado por Certidão", "Decurso de Prazo Confirmado", "Iminente por Decurso de Prazo", "Renúncia Expressa das Partes", "Acordo Homologado", "Início da Execução", "Processo Arquivado Definitivamente"
+    "status": "string", // Se o status for "Confirmado" ou "Iminente", extraia a data do trânsito no formato "AAAA-MM-DD". Caso contrário, o valor deve ser null.
     "justificativa": "string", // Explicação técnica e detalhada da sua análise, citando as movimentações e regras aplicadas, especialmente a regra da totalidade das partes.
+    "data_transito_julgado": "string", // Se o status for "Confirmado" ou "Iminente", extraia a data do trânsito no formato "AAAA-MM-DD". Caso contrário, o valor deve ser null.
     "movimentacoes_chave": [ // Lista de strings com as descrições exatas das movimentações que basearam sua decisão.
         "Decorrido o prazo de [NOME DA PARTE] em DD/MM/AAAA",
         "Transitado em Julgado - Data: DD/MM/AAAA",
@@ -153,5 +186,28 @@ class TransitInRemJudicatamAgent(BaseLLMAgent):
         {trechos_decisoes}
 
         Analise os dados fornecidos e retorne o JSON com o status do trânsito em julgado.
+        """
+        return await self._llm_call(payload)
+    
+    
+class PostSentenceAgent(BaseLLMAgent):
+    """
+    Agente especialista em analisar a fase pós-sentença, focando em recursos.
+    """
+    def __init__(self):
+        super().__init__(
+            SYSTEM_INSTRUCTION_POST_SENTENCE_AGENT,
+            expects_json=True,
+        )
+
+    async def execute(self, movimentos: list, trechos_decisoes: str) -> str:
+        payload = f"""
+        **ÚLTIMAS MOVIMENTAÇÕES (da mais antiga para a mais recente):**
+        {json.dumps(movimentos, ensure_ascii=False, indent=2)}
+
+        **TRECHOS DE DECISÕES E SENTENÇAS RELEVANTES:**
+        {trechos_decisoes}
+
+        Analise os dados e retorne o JSON com o status da fase recursal.
         """
         return await self._llm_call(payload)

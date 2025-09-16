@@ -1,22 +1,59 @@
 import base64
+import logging
+import re
 import uuid
-from sqlalchemy.orm import Session, joinedload
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+import dateutil.parser
+from passlib.context import CryptContext
 from sqlalchemy import desc, func
+from sqlalchemy.orm import Session, joinedload
+
 from db import models
 from vigia.api import schemas
-from passlib.context import CryptContext
-from datetime import datetime, timezone
-import dateutil.parser
 
-# O pwd_context pode ser movido para um arquivo de utils/segurança se preferir
+logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+_CNJ_RE = re.compile(r"\D+")
+
+
+def _cnj_digits(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    digits = _CNJ_RE.sub("", s)
+    return digits if len(digits) == 20 else None
+
+
+def _format_cnj(s: Optional[str]) -> Optional[str]:
+    digits = _cnj_digits(s)
+    if not digits:
+        return s
+    return f"{digits[0:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:20]}"
+
+
+def _set_if_present(obj: Any, attr: str, value: Any) -> None:
+    if value is not None:
+        setattr(obj, attr, value)
+
+
+def _parse_iso_dt(v: Any) -> Optional[datetime]:
+    if not v:
+        return None
+    try:
+        return dateutil.parser.isoparse(v)
+    except (ValueError, TypeError):
+        return None
+
 
 def get_password_hash(password):
     return pwd_context.hash(password)
 
-# --- User CRUD (sem alterações) ---
+
 def get_user_by_email(db: Session, email: str):
     return db.query(models.User).filter(models.User.email == email).first()
+
 
 def create_user(db: Session, user: schemas.UserCreate):
     hashed_password = get_password_hash(user.password)
@@ -26,30 +63,19 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.refresh(db_user)
     return db_user
 
-# --- Negotiation CRUD (sem alterações) ---
+
 def get_or_create_default_user(db: Session):
-    """Busca ou cria um usuário padrão para ser o agente de novas negociações."""
     default_email = "agente.padrao@vigia.com"
     user = get_user_by_email(db, email=default_email)
     if not user:
-        # CUIDADO: Em produção, use uma senha segura vinda de configs
         user_in = schemas.UserCreate(email=default_email, password="defaultpassword")
         user = create_user(db, user_in)
     return user
 
 
 def get_negotiations(db: Session, user_id: str, skip: int = 0, limit: int = 100):
-    """
-    Busca negociações do agente com agregados de e-mail:
-      - message_count (contagem de mensagens no thread)
-      - last_message_time (data/hora da última mensagem)
-      - last_message_body (corpo da última mensagem)
-    Mantém negociações sem e-mail (count=0) graças aos LEFT JOINs.
-    """
-    # Garante tipo correto no filtro (UUID)
     user_uuid = uuid.UUID(str(user_id))
 
-    # Subquery: por thread -> contagem e última data
     last_message_sq = (
         db.query(
             models.EmailMessage.thread_id.label("thread_id"),
@@ -60,7 +86,6 @@ def get_negotiations(db: Session, user_id: str, skip: int = 0, limit: int = 100)
         .subquery("last_msg")
     )
 
-    # Subquery: corpo da última mensagem (joinando na última data)
     last_body_sq = (
         db.query(
             models.EmailMessage.thread_id.label("thread_id"),
@@ -70,12 +95,13 @@ def get_negotiations(db: Session, user_id: str, skip: int = 0, limit: int = 100)
         .join(
             last_message_sq,
             (models.EmailMessage.thread_id == last_message_sq.c.thread_id)
-            & (models.EmailMessage.sent_datetime == last_message_sq.c.last_message_time),
+            & (
+                models.EmailMessage.sent_datetime == last_message_sq.c.last_message_time
+            ),
         )
         .subquery("last_body")
     )
 
-    # Query principal
     results = (
         db.query(
             models.Negotiation,
@@ -83,223 +109,269 @@ def get_negotiations(db: Session, user_id: str, skip: int = 0, limit: int = 100)
             last_message_sq.c.last_message_time.label("last_message_time"),
             last_body_sq.c.body.label("last_message_body"),
         )
-        # LEFT JOIN explícito com EmailThread (evita ambiguidades)
-        .outerjoin(models.EmailThread, models.Negotiation.email_thread_id == models.EmailThread.id)
-        # LEFT JOINs com as subqueries de agregação
-        .outerjoin(last_message_sq, models.Negotiation.email_thread_id == last_message_sq.c.thread_id)
-        .outerjoin(last_body_sq, models.Negotiation.email_thread_id == last_body_sq.c.thread_id)
-        # Carrega o processo (e você pode adicionar joinedload(Negotiation.email_thread) se quiser)
+        .outerjoin(
+            models.EmailThread,
+            models.Negotiation.email_thread_id == models.EmailThread.id,
+        )
+        .outerjoin(
+            last_message_sq,
+            models.Negotiation.email_thread_id == last_message_sq.c.thread_id,
+        )
+        .outerjoin(
+            last_body_sq, models.Negotiation.email_thread_id == last_body_sq.c.thread_id
+        )
         .options(joinedload(models.Negotiation.legal_process))
-        # Ordena por última mensagem, empurrando NULLs para o fim
         .order_by(last_message_sq.c.last_message_time.desc().nullslast())
         .offset(skip)
         .limit(limit)
         .all()
     )
-
     return results
 
 
 def get_negotiation_details(db: Session, negotiation_id: str):
-    # Usar joinedload é mais eficiente para carregar relações
-    return db.query(models.Negotiation).options(
-        joinedload(models.Negotiation.email_thread).joinedload(models.EmailThread.messages)
-    ).filter(models.Negotiation.id == negotiation_id).first()
+    return (
+        db.query(models.Negotiation)
+        .options(
+            joinedload(models.Negotiation.email_thread).joinedload(
+                models.EmailThread.messages
+            )
+        )
+        .filter(models.Negotiation.id == negotiation_id)
+        .first()
+    )
 
 
-# --- Legal Process CRUD (LÓGICA PRINCIPAL IMPLEMENTADA) ---
 def get_process_by_number(db: Session, process_number: str):
-    return db.query(models.LegalProcess).filter(models.LegalProcess.process_number == process_number).first()
+    digits = _cnj_digits(process_number)
+    if not digits:
+        return None
+    return (
+        db.query(models.LegalProcess)
+        .filter(models.LegalProcess.process_number == digits)
+        .first()
+    )
 
-def upsert_process_from_jusbr_data(db: Session, jusbr_data: dict, user_id: str) -> models.LegalProcess:
-    """
-    Atualiza ou cria uma INSTÂNCIA de processo e suas relações a partir do JSON do Jus.br.
-    - Utiliza 'numero_unico_incidencia' como chave de busca para diferenciar instâncias.
-    - Salva 'grupo_incidencia' para agrupar instâncias relacionadas.
-    - Realiza uma sincronização completa (delete-then-create) para as relações
-      (movimentos, partes, documentos) para garantir consistência.
-    """
+
+def upsert_process_from_jusbr_data(
+    db: Session, jusbr_data: dict, user_id: str
+) -> Optional[models.LegalProcess]:
     if not jusbr_data or jusbr_data.get("erro"):
+        logger.warning(
+            "Payload vazio ou com erro ao tentar upsert do processo: %s", jusbr_data
+        )
         return None
 
-    # <-- ALTERADO: Usa o novo identificador único como chave principal para o upsert.
-    numero_unico = jusbr_data.get("numero_unico_incidencia")
-    if not numero_unico:
-        # Fallback para o caso de um processo simples, sem múltiplas instâncias.
-        numero_unico = "".join(filter(str.isdigit, jusbr_data.get("numeroProcesso", "")))
+    numero_unico_incidencia = jusbr_data.get("numero_unico_incidencia")
+    cnj_principal = _cnj_digits(jusbr_data.get("numeroProcesso"))
+    cnj_formatado = _format_cnj(cnj_principal)
 
-    if not numero_unico:
-        print("Erro: Payload do Jus.br sem numeroProcesso ou numero_unico_incidencia.")
-        return None
+    process = None
+    if numero_unico_incidencia:
+        process = (
+            db.query(models.LegalProcess)
+            .filter(
+                models.LegalProcess.numero_unico_incidencia == numero_unico_incidencia
+            )
+            .first()
+        )
 
-    # 1) Localiza ou cria a instância do processo
-    process = db.query(models.LegalProcess).filter(
-        models.LegalProcess.numero_unico_incidencia == numero_unico
-    ).first()
+    if not process and cnj_formatado:
+        process = (
+            db.query(models.LegalProcess)
+            .filter(
+                models.LegalProcess.process_number == cnj_formatado,
+                models.LegalProcess.numero_unico_incidencia.is_(None),
+            )
+            .first()
+        )
 
+    created = False
     if not process:
+        if not cnj_principal:
+            logger.error(
+                "Não foi possível criar processo, falta CNJ principal no payload do Jus.br."
+            )
+            return None
         process = models.LegalProcess(
-            numero_unico_incidencia=numero_unico,
-            owner_id=user_id
+            process_number=cnj_formatado,
+            numero_unico_incidencia=numero_unico_incidencia,
+            owner_id=user_id,
         )
         db.add(process)
+        created = True
 
-    # 2) Extrai dados do payload (a lógica do worker já garante que 'tramitacaoAtual' é a correta para esta instância)
-    tramitacao = jusbr_data.get("tramitacaoAtual", {}) or {}
+    tramitacao = jusbr_data.get("tramitacaoAtual") or {}
     classe_info = (tramitacao.get("classe") or [{}])[0] or {}
     assunto_info = (tramitacao.get("assunto") or [{}])[0] or {}
-    distribuicoes = tramitacao.get("distribuicao") or tramitacao.get("distribuicoes") or []
-    grau_info = tramitacao.get("grau", {}) or {}
-    tribunal_info = jusbr_data.get("tribunal", {}) or {}
+    grau_info = tramitacao.get("grau") or {}
+    tribunal_info = tramitacao.get("tribunal") or {}
 
-    # 3) Preenche os dados da instância do processo
-    process.process_number = jusbr_data.get("numeroProcesso")
-    process.grupo_incidencia = jusbr_data.get("grupo_incidencia") # <-- NOVO: Salva a flag de agrupamento
-    process.valor_causa = tramitacao.get("valorAcao")
-    process.classe_processual = classe_info.get("descricao")
-    process.assunto = assunto_info.get("descricao")
-    
-    if tramitacao.get("dataHoraAjuizamento"):
-        try:
-            process.start_date = dateutil.parser.isoparse(tramitacao["dataHoraAjuizamento"])
-        except (ValueError, TypeError):
-            process.start_date = None
+    process.process_number = cnj_formatado
+    _set_if_present(process, "numero_unico_incidencia", numero_unico_incidencia)
+    _set_if_present(process, "grupo_incidencia", jusbr_data.get("grupo_incidencia"))
+    _set_if_present(process, "valor_causa", tramitacao.get("valorAcao"))
+    _set_if_present(process, "classe_processual", classe_info.get("descricao"))
+    _set_if_present(process, "assunto", assunto_info.get("descricao"))
 
-    # Mapeamento de campos adicionais
-    process.secrecy_level = jusbr_data.get("nivelSigilo")
-    process.permite_peticionar = jusbr_data.get("permitePeticionar")
-    process.fonte_dados_codex_id = jusbr_data.get("idFonteDadosCodex")
-    process.ativo = jusbr_data.get("ativo")
-    process.status = "active" if process.ativo else "inactive"
-    
-    # Detalhes do Tribunal
-    process.tribunal = tribunal_info.get("sigla") or jusbr_data.get("siglaTribunal")
-    process.tribunal_nome = tribunal_info.get("nome") or process.tribunal
-    process.tribunal_segmento = tribunal_info.get("segmento")
-    process.tribunal_jtr = tribunal_info.get("jtr")
+    ajuiz = _parse_iso_dt(tramitacao.get("dataHoraAjuizamento"))
+    if ajuiz:
+        process.start_date = ajuiz
 
-    # Grau e Instância da tramitação específica
-    process.instance = tramitacao.get("instancia")
-    process.degree_sigla = grau_info.get("sigla")
-    process.degree_nome = grau_info.get("nome")
-    process.degree_numero = grau_info.get("numero")
+    _set_if_present(process, "secrecy_level", jusbr_data.get("nivelSigilo"))
+    _set_if_present(process, "permite_peticionar", tramitacao.get("permitePeticionar"))
+    _set_if_present(
+        process, "fonte_dados_codex_id", tramitacao.get("idFonteDadosCodex")
+    )
+    _set_if_present(process, "ativo", tramitacao.get("ativo"))
 
-    # Códigos e Hierarquia
-    process.classe_codigo = classe_info.get("codigo")
-    process.assunto_codigo = assunto_info.get("codigo")
-    process.assunto_hierarquia = assunto_info.get("hierarquia")
+    if tramitacao.get("ativo") is not None:
+        process.status = "Ativo" if tramitacao.get("ativo") else "Arquivado"
 
-    # Atualiza data e armazena o JSON bruto
+    tribunal_sigla = tribunal_info.get("sigla") or jusbr_data.get("siglaTribunal")
+    _set_if_present(process, "tribunal", tribunal_sigla)
+    _set_if_present(
+        process, "tribunal_nome", tribunal_info.get("nome") or tribunal_sigla
+    )
+    _set_if_present(process, "tribunal_segmento", tribunal_info.get("segmento"))
+    _set_if_present(process, "tribunal_jtr", tribunal_info.get("jtr"))
+
+    _set_if_present(process, "instance", tramitacao.get("instancia"))
+    _set_if_present(process, "degree_sigla", grau_info.get("sigla"))
+    _set_if_present(process, "degree_nome", grau_info.get("nome"))
+    _set_if_present(process, "degree_numero", grau_info.get("numero"))
+
+    _set_if_present(process, "classe_codigo", classe_info.get("codigo"))
+    _set_if_present(process, "assunto_codigo", assunto_info.get("codigo"))
+    _set_if_present(process, "assunto_hierarquia", assunto_info.get("hierarquia"))
+
     process.last_update = datetime.now(timezone.utc)
-    process.raw_data = jusbr_data
+    _set_if_present(process, "raw_data", jusbr_data)
 
-    # 4) Limpa relações antigas para garantir sincronização completa
     if process.id:
-        # Usamos 'process.id' para garantir que estamos limpando as relações da instância correta
-        db.query(models.ProcessMovement).filter(models.ProcessMovement.process_id == process.id).delete()
-        db.query(models.ProcessParty).filter(models.ProcessParty.process_id == process.id).delete()
-        db.query(models.ProcessDocument).filter(models.ProcessDocument.process_id == process.id).delete()
-        if hasattr(models, "ProcessDistribution"):
-            db.query(models.ProcessDistribution).filter(models.ProcessDistribution.process_id == process.id).delete()
+        db.query(models.ProcessMovement).filter_by(process_id=process.id).delete()
+        db.query(models.ProcessParty).filter_by(process_id=process.id).delete()
+        db.query(models.ProcessDocument).filter_by(process_id=process.id).delete()
+        db.query(models.ProcessDistribution).filter_by(process_id=process.id).delete()
 
-    # 5) Cria novas movimentações (a partir da tramitação específica)
-    for mov in tramitacao.get("movimentos", []) or []:
-        try:
-            mov_date = dateutil.parser.isoparse(mov["dataHora"])
-            db.add(models.ProcessMovement(
-                date=mov_date,
-                description=mov.get("descricao", ""),
-                process=process
-            ))
-        except (ValueError, TypeError, KeyError):
-            continue
+    for mov in tramitacao.get("movimentos") or []:
+        mov_date = _parse_iso_dt(mov.get("dataHora"))
+        if mov_date:
+            db.add(
+                models.ProcessMovement(
+                    date=mov_date,
+                    description=mov.get("descricao") or "",
+                    process=process,
+                )
+            )
 
-    # 6) Cria novas partes (a partir da tramitação específica)
-    for party_data in tramitacao.get("partes", []) or []:
-        main_doc = (party_data.get("documentosPrincipais") or [{}])[0]
-        db_party = models.ProcessParty(
-            polo=party_data.get("polo"),
-            name=party_data.get("nome"),
-            document_type=main_doc.get("tipo"),
-            document_number=str(main_doc.get("numero", "")),
-            representatives=party_data.get("representantes"),
-            ajg=party_data.get("assistenciaJudiciariaGratuita"),
-            sigilosa=party_data.get("sigilosa"),
-            process=process
+    for party_data in tramitacao.get("partes") or []:
+        main_doc = (party_data.get("documentosPrincipais") or [{}])[0] or {}
+        db.add(
+            models.ProcessParty(
+                polo=party_data.get("polo"),
+                name=party_data.get("nome"),
+                document_type=main_doc.get("tipo"),
+                document_number=str(main_doc.get("numero") or ""),
+                representatives=party_data.get("representantes"),
+                ajg=party_data.get("assistenciaJudiciariaGratuita"),
+                sigilosa=party_data.get("sigilosa"),
+                process=process,
+            )
         )
-        db.add(db_party)
 
-    # 7) Cria metadados dos documentos (a lista de documentos é comum a todas as instâncias)
-    # A lógica de anexar conteúdo binário/texto virá depois.
-    documentos_metadados = tramitacao.get("documentos", []) or []
-    for doc_meta in documentos_metadados:
-        try:
-            juntada_date = dateutil.parser.isoparse(doc_meta["dataHoraJuntada"])
-            tipo_info = doc_meta.get("tipo", {})
-            arquivo_info = doc_meta.get("arquivo", {})
-            db.add(models.ProcessDocument(
-                external_id=doc_meta.get("idOrigem") or str(doc_meta.get("idCodex", "")),
-                name=doc_meta.get("nome"),
-                document_type=tipo_info.get("nome"),
-                juntada_date=juntada_date,
-                sequence=doc_meta.get("sequencia"),
-                codex_id=str(doc_meta.get("idCodex", "")),
-                href_binary=doc_meta.get("hrefBinario"),
-                file_type=arquivo_info.get("tipo"),
-                file_size=arquivo_info.get("tamanho"),
-                process=process
-            ))
-        except (ValueError, TypeError, KeyError):
-            continue
+    for doc_meta in tramitacao.get("documentos") or []:
+        juntada_date = _parse_iso_dt(doc_meta.get("dataHoraJuntada"))
+        if juntada_date:
+            tipo_info = doc_meta.get("tipo") or {}
+            arquivo_info = doc_meta.get("arquivo") or {}
+            db.add(
+                models.ProcessDocument(
+                    external_id=doc_meta.get("idOrigem")
+                    or str(doc_meta.get("idCodex") or ""),
+                    name=doc_meta.get("nome"),
+                    document_type=tipo_info.get("nome"),
+                    juntada_date=juntada_date,
+                    sequence=doc_meta.get("sequencia"),
+                    codex_id=str(doc_meta.get("idCodex") or ""),
+                    href_binary=doc_meta.get("hrefBinario"),
+                    file_type=arquivo_info.get("tipo"),
+                    file_size=arquivo_info.get("tamanho"),
+                    process=process,
+                )
+            )
 
-    # Faz um flush para que os documentos recém-criados tenham um ID
     db.flush()
 
-    # 8) Anexa o conteúdo (texto e binário) aos documentos correspondentes
-    documentos_com_conteudo = jusbr_data.get("documentos_com_conteudo", []) or []
-    for doc_content in documentos_com_conteudo:
-        if doc_content.get("error"):
+    for doc_content in jusbr_data.get("documentos_com_conteudo") or []:
+        ext_id = doc_content.get("external_id")
+        if doc_content.get("error") or not ext_id:
             continue
-        
-        # Encontra o documento correspondente que já foi criado com os metadados
-        doc_record = db.query(models.ProcessDocument).filter(
-            models.ProcessDocument.process_id == process.id,
-            models.ProcessDocument.external_id == doc_content.get("external_id")
-        ).first()
 
+        doc_record = (
+            db.query(models.ProcessDocument)
+            .filter_by(process_id=process.id, external_id=ext_id)
+            .first()
+        )
         if doc_record:
-            doc_record.text_content = doc_content.get("text_content")
-            if doc_content.get("binary_content_b64"):
-                doc_record.binary_content = base64.b64decode(doc_content["binary_content_b64"])
+            _set_if_present(doc_record, "text_content", doc_content.get("text_content"))
+            b64 = doc_content.get("binary_content_b64")
+            if b64:
+                try:
+                    doc_record.binary_content = base64.b64decode(b64)
+                except Exception as e:
+                    logger.debug(f"Falha ao decodificar binário do doc {ext_id}: {e}")
 
-    # 9) Finaliza a transação
     try:
         db.commit()
         db.refresh(process)
+        logger.info(
+            "LegalProcess %s (instância=%s, cnj=%s).",
+            "criado" if created else "atualizado",
+            numero_unico_incidencia,
+            cnj_principal,
+        )
         return process
     except Exception as e:
         db.rollback()
-        print(f"Erro ao salvar no banco de dados para {numero_unico}: {e}")
+        logger.exception(
+            "Erro ao salvar no banco para instância %s: %s", numero_unico_incidencia, e
+        )
         raise
 
+
 def get_processes(db: Session, user_id: str, skip: int = 0, limit: int = 100):
-    return db.query(models.LegalProcess)\
-        .filter(models.LegalProcess.owner_id == user_id)\
-        .order_by(desc(models.LegalProcess.last_update))\
-        .offset(skip).limit(limit).all()
+    return (
+        db.query(models.LegalProcess)
+        .filter(models.LegalProcess.owner_id == user_id)
+        .order_by(desc(models.LegalProcess.last_update))
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
 
 def get_process_details(db: Session, process_id: str):
-    # Esta função agora é implicitamente usada pelo endpoint sync_and_get_process_details
-    # pois ele retorna o objeto completo após o upsert.
-    return db.query(models.LegalProcess).filter(models.LegalProcess.id == process_id).first()
-
-# --- Chat CRUD (sem alterações) ---
-def get_chat_session(db: Session, session_id: str, user_id: str):
-    return db.query(models.ChatSession)\
-        .filter(models.ChatSession.id == session_id, models.ChatSession.owner_id == user_id)\
+    return (
+        db.query(models.LegalProcess)
+        .filter(models.LegalProcess.id == process_id)
         .first()
+    )
 
-def create_chat_message(db: Session, message: schemas.ChatMessageCreate, session_id: str, role: str):
+
+def get_chat_session(db: Session, session_id: str, user_id: str):
+    return (
+        db.query(models.ChatSession)
+        .filter(
+            models.ChatSession.id == session_id, models.ChatSession.owner_id == user_id
+        )
+        .first()
+    )
+
+
+def create_chat_message(
+    db: Session, message: schemas.ChatMessageCreate, session_id: str, role: str
+):
     db_message = models.ChatMessage(**message.dict(), session_id=session_id, role=role)
     db.add(db_message)
     db.commit()
