@@ -20,7 +20,7 @@ def _parse_list(value: Any) -> List[str]:
 
     if isinstance(value, str) and value:
         value = value.strip()
-        try:                      # tenta JSON / Python-list first
+        try:  # tenta JSON / Python-list first
             parsed = ast.literal_eval(value)
             if isinstance(parsed, list):
                 return [str(item).strip() for item in parsed if str(item).strip()]
@@ -43,21 +43,30 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        frozen=True,      # ← imutável depois de criada
+        frozen=True,
     )
 
     # ───────────────────── App / Runtime ──────────────────────
     ENVIRONMENT: str = Field(default="development")
     LOG_LEVEL: str = Field(default="INFO")
-    
-    # JWT / Auth  ← NOVO
-    SECRET_KEY: str 
+
+    # JWT / Auth
+    SECRET_KEY: str
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
 
-    # UID/GID opcionais (usados no docker-compose para mapear volumes)
+    # UID/GID opcionais
     UID: int | None = None
     GID: int | None = None
+
+    INSTANCE_NAME: str = Field("", env="INSTANCE_NAME")
+
+    # nº máximo de instâncias processadas em paralelo no importer histórico
+    WPP_IMPORT_MAX_INSTANCE_WORKERS: int = Field(
+        2, env="WPP_IMPORT_MAX_INSTANCE_WORKERS"
+    )
+    # nº máximo de transcrições Whisper concorrentes (protege CPU/GPU)
+    WPP_MAX_WHISPER_CONCURRENCY: int = Field(1, env="WPP_MAX_WHISPER_CONCURRENCY")
 
     # ─────────── Banco de Dados (PostgreSQL) ────────────
     DATABASE_URL: str
@@ -71,9 +80,9 @@ class Settings(BaseSettings):
 
     # ────────────── PJe Office (headless) ───────────────
     PJE_PFX_PASS: str
-    PJE_PFX_PATH: str 
+    PJE_PFX_PATH: str
     PJE_HEADLESS_PORT: int
-    
+
     # ────────────── Jus.br PDPJ ───────────────
     JUSBR_API_BASE_URL: str
     JUSBR_CLIENT_ID: str
@@ -85,6 +94,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = None
     OLLAMA_API_URL: str | None = None
     OLLAMA_MODEL: str | None = None
+    WHISPER_MODEL: str = "turbo"
 
     # ───────── Evolution / WhatsApp ───────────
     EVOLUTION_BASE_URL: str
@@ -110,6 +120,12 @@ class Settings(BaseSettings):
     IGNORED_RECIPIENT_PATTERNS: List[str] = Field(default_factory=list)
 
     # ────────────── Validadores custom ─────────────
+    @property
+    def INSTANCE_NAMES(self) -> list[str]:
+        raw = self.INSTANCE_NAME or ""
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        return names
+
     @field_validator(
         "EMAIL_ACCOUNTS",
         "SUBJECT_FILTER",
@@ -131,5 +147,6 @@ class Settings(BaseSettings):
         if isinstance(v, str) and v.isdigit():
             return int(v)
         raise ValueError("deve ser número inteiro")
+
 
 settings = Settings()

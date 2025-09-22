@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import traceback
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -31,84 +32,107 @@ async def main_async():
         "--strategy",
         choices=["longest", "latest"],
         default="longest",
-        help="Estratégia para selecionar conversas: 'longest' (com mais mensagens) ou 'latest' (mais recentes).",
+        help="Estratégia: 'longest' (mais mensagens) ou 'latest' (mais recentes).",
+    )
+    parser.add_argument(
+        "--instance",
+        type=str,
+        default=None,
+        help="Filtra por instance_name. Aceita múltiplas separadas por vírgula (ex: 'GiovannaCelular,Joice').",
+    )
+    parser.add_argument(
+        "--min-age-days",
+        type=int,
+        default=None,
+        help="Seleciona conversas **mais antigas** com last_message_timestamp <= agora - N dias (ex: 45).",
     )
     args = parser.parse_args()
 
     logging.info(
-        f"Iniciando análise em lote de {args.limit} conversas usando a estratégia '{args.strategy}'."
+        f"Iniciando análise em lote de {args.limit} conversas | strategy={args.strategy} | "
+        f"instance={args.instance} | min_age_days={args.min_age_days}"
     )
     db: Session = SessionLocal()
-    conversations_to_analyze = []
 
     try:
+        # Base query
         if args.strategy == "longest":
-            # Query para encontrar as conversas com mais mensagens
-            query_result = (
+            q = (
                 db.query(
+                    models.WhatsappConversation.instance_name,
                     models.WhatsappConversation.remote_jid,
                     func.count(models.WhatsappMessage.id).label("message_count"),
                 )
                 .join(models.WhatsappMessage)
-                .group_by(models.WhatsappConversation.remote_jid)
+                .group_by(
+                    models.WhatsappConversation.instance_name,
+                    models.WhatsappConversation.remote_jid,
+                )
                 .order_by(func.count(models.WhatsappMessage.id).desc())
-                .limit(args.limit)
-                .all()
             )
-        else:  # latest
-            # Query para encontrar as conversas mais recentes
-            query_result = (
-                db.query(models.WhatsappConversation.remote_jid)
+        else:
+            q = (
+                db.query(
+                    models.WhatsappConversation.instance_name,
+                    models.WhatsappConversation.remote_jid,
+                    func.max(models.WhatsappMessage.message_timestamp).label("last_ts"),
+                )
                 .join(models.WhatsappMessage)
-                .group_by(models.WhatsappConversation.remote_jid)
+                .group_by(
+                    models.WhatsappConversation.instance_name,
+                    models.WhatsappConversation.remote_jid,
+                )
                 .order_by(func.max(models.WhatsappMessage.message_timestamp).desc())
-                .limit(args.limit)
-                .all()
             )
 
-        conversations_to_analyze = [row[0] for row in query_result]
+        # Filtro por instância (se fornecido)
+        if args.instance:
+            instances = [s.strip() for s in args.instance.split(",") if s.strip()]
+            q = q.filter(models.WhatsappConversation.instance_name.in_(instances))
 
-        if not conversations_to_analyze:
-            logging.warning(
-                "Nenhuma conversa encontrada no banco para analisar com os critérios fornecidos."
-            )
+        # Filtro por período mínimo (conversas antigas)
+        if args.min_age_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=args.min_age_days)
+            q = q.filter(models.WhatsappConversation.last_message_timestamp <= cutoff)
+
+        query_result = q.limit(args.limit).all()
+        if not query_result:
+            logging.warning("Nenhuma conversa encontrada com os critérios fornecidos.")
             return
 
-        logging.info(f"Conversas selecionadas para análise: {conversations_to_analyze}")
+        conversations_to_analyze = [(row[0], row[1]) for row in query_result]
+        logging.info("Conversas selecionadas: %s", conversations_to_analyze)
 
-        # Cria uma "tarefa" assíncrona para cada conversa
         tasks = []
-        for conv_id in conversations_to_analyze:
-            payload = {"conversation_id": conv_id}
+        for instance_name, conv_jid in conversations_to_analyze:
+            payload = {
+                "conversation_id": conv_jid,
+                "instance_name": instance_name,
+            }
             tasks.append(run_department_pipeline(payload))
 
-        # Executa todas as tarefas de análise em paralelo
-        logging.info(f"Disparando {len(tasks)} análises em paralelo...")
+        logging.info("Disparando %d análises em paralelo...", len(tasks))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Itera sobre os resultados para confirmar o salvamento
         for i, result in enumerate(results):
-            conv_id = conversations_to_analyze[i]
+            instance_name, conv_id = conversations_to_analyze[i]
             if isinstance(result, Exception):
-                # Esta é a forma correta de imprimir o traceback de um erro capturado pelo asyncio
                 logging.error(
-                    f"A análise para a conversa {conv_id} falhou com uma exceção: {result}"
+                    "[%s|%s] análise falhou: %s", instance_name, conv_id, result
                 )
                 tb_lines = traceback.format_exception(
                     type(result), result, result.__traceback__
                 )
                 logging.error("".join(tb_lines))
             elif result is None:
-                logging.warning(
-                    f"A análise para a conversa {conv_id} não retornou um resultado (verifique os logs do worker para erros)."
-                )
+                logging.warning("[%s|%s] análise sem retorno.", instance_name, conv_id)
             else:
                 logging.info(
-                    f"Análise para a conversa {conv_id} concluída e salva com sucesso."
+                    "[%s|%s] análise concluída e salva.", instance_name, conv_id
                 )
 
     except Exception as e:
-        logging.error(f"Ocorreu um erro durante a análise em lote: {e}", exc_info=True)
+        logging.error("Erro na análise em lote: %s", e, exc_info=True)
     finally:
         db.close()
 

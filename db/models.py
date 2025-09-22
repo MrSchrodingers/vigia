@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -433,7 +434,8 @@ class WhatsappConversation(Base):
 
     __tablename__ = "whatsapp_conversations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=as_std_uuid)
-    remote_jid = Column(String, unique=True, index=True, nullable=False)
+    instance_name = Column(String, index=True, nullable=False)
+    remote_jid = Column(String, index=True, nullable=False)
     last_message_timestamp = Column(DateTime(timezone=True), index=True, nullable=True)
 
     messages = relationship(
@@ -447,6 +449,11 @@ class WhatsappConversation(Base):
         back_populates="conversation",
         uselist=False,
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "remote_jid", name="uq_wpp_instance_jid"),
+        Index("ix_wpp_conv_lastmsg", "last_message_timestamp"),
     )
 
 

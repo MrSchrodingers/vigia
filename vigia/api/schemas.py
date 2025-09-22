@@ -306,7 +306,7 @@ class CPJParty(BaseModel):
     tipo_pessoa: Optional[str]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class CPJMovement(BaseModel):
@@ -314,7 +314,7 @@ class CPJMovement(BaseModel):
     texto_andamento: Optional[str]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class CPJProcessDetails(BaseModel):
@@ -332,7 +332,7 @@ class CPJProcessDetails(BaseModel):
     movements: List[CPJMovement] = []
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class LegalProcessDetails(LegalProcess):

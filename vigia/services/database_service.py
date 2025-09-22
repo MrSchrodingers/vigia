@@ -12,55 +12,56 @@ logger = logging.getLogger(__name__)
 
 
 # --- Funções do Departamento de WhatsApp ---
-
-
 def save_raw_conversation(
     db: Session,
+    instance_name: str,
     conversation_jid: str,
     messages: List[Dict[str, Any]],
 ) -> int:
-    """
-    Salva, de forma idempotente, as mensagens brutas de uma conversa do WhatsApp.
-
-    - Encontra ou cria o registro da conversa.
-    - Atualiza o timestamp da última mensagem na conversa.
-    - Insere apenas mensagens novas, evitando duplicatas pelo `external_id`.
-    - Retorna o número de novas mensagens inseridas.
-    """
-    # 1. Filtra mensagens inválidas e encontra o timestamp mais recente
     valid_messages = []
     latest_timestamp = 0
+    earliest_timestamp = None
     for msg in messages:
         ts = msg.get("timestamp")
         if msg.get("external_id") and ts is not None:
-            # Garante que ts seja um número antes de comparar
             try:
                 current_ts = int(ts)
                 valid_messages.append(msg)
+                if earliest_timestamp is None or current_ts < earliest_timestamp:
+                    earliest_timestamp = current_ts
                 if current_ts > latest_timestamp:
                     latest_timestamp = current_ts
             except (ValueError, TypeError):
-                continue  # Ignora mensagens com timestamp inválido
+                continue
 
+    discarded = len(messages) - len(valid_messages)
     if not valid_messages:
+        logger.info(
+            "[%s|%s] Nenhuma mensagem válida (descartadas=%s).",
+            instance_name,
+            conversation_jid,
+            discarded,
+        )
         return 0
 
-    # 2. Encontra ou cria a conversa
     conversation = (
         db.query(models.WhatsappConversation)
-        .filter_by(remote_jid=conversation_jid)
+        .filter_by(instance_name=instance_name, remote_jid=conversation_jid)
         .first()
     )
+    created = False
     if not conversation:
-        conversation = models.WhatsappConversation(remote_jid=conversation_jid)
+        conversation = models.WhatsappConversation(
+            instance_name=instance_name,
+            remote_jid=conversation_jid,
+        )
         db.add(conversation)
-        db.flush()  # Garante que o conversation.id esteja disponível para as mensagens
+        db.flush()
+        created = True
 
-    # 3. Atualiza o timestamp da conversa-pai
     if latest_timestamp > 0:
         conversation.last_message_timestamp = datetime.fromtimestamp(latest_timestamp)
 
-    # 4. Prepara as mensagens para inserção em lote
     message_payloads = [
         {
             "conversation_id": conversation.id,
@@ -74,10 +75,14 @@ def save_raw_conversation(
     ]
 
     if not message_payloads:
-        db.commit()  # Commita a atualização do timestamp mesmo se não houver novas mensagens
+        db.commit()
+        logger.info(
+            "[%s|%s] Sem payload após validação; apenas atualizei last_message_timestamp.",
+            instance_name,
+            conversation_jid,
+        )
         return 0
 
-    # 5. Insere as mensagens usando `ON CONFLICT DO NOTHING` para garantir idempotência
     stmt = insert(models.WhatsappMessage).values(message_payloads)
     stmt = stmt.on_conflict_do_nothing(
         index_elements=["conversation_id", "external_id"]
@@ -86,33 +91,55 @@ def save_raw_conversation(
     try:
         result = db.execute(stmt)
         db.commit()
-        inserted_count = result.rowcount
+        inserted_count = result.rowcount or 0
         logger.info(
-            f"{inserted_count} novas mensagens salvas para a conversa {conversation_jid}"
+            "[%s|%s] %s | msgs_validas=%s descartadas=%s intervalo=[%s → %s] inserts=%s",
+            instance_name,
+            conversation_jid,
+            "CRIADA" if created else "REUTILIZADA",
+            len(valid_messages),
+            discarded,
+            datetime.fromtimestamp(earliest_timestamp).isoformat()
+            if earliest_timestamp
+            else "-",
+            datetime.fromtimestamp(latest_timestamp).isoformat()
+            if latest_timestamp
+            else "-",
+            inserted_count,
         )
         return inserted_count
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Erro ao salvar mensagens para {conversation_jid}. Rollback executado. Erro: {e}"
+            "[%s|%s] Erro ao salvar mensagens. Rollback. Erro: %s",
+            instance_name,
+            conversation_jid,
+            e,
         )
         return 0
 
 
 def save_whatsapp_analysis_results(
-    db: Session, conversation_jid: str, analysis_data: dict
+    db: Session, instance_name: str, conversation_jid: str, analysis_data: dict
 ):
     """
-    Salva ou atualiza os resultados da análise de IA para uma conversa de WhatsApp.
+    Salva/atualiza resultados da análise de IA para uma conversa (chave: instância + JID).
     """
     conversation = (
         db.query(models.WhatsappConversation)
-        .filter_by(remote_jid=conversation_jid)
+        .filter_by(instance_name=instance_name, remote_jid=conversation_jid)
         .first()
     )
     if not conversation:
+        conversation = (
+            db.query(models.WhatsappConversation)
+            .filter_by(remote_jid=conversation_jid)
+            .first()
+        )
+
+    if not conversation:
         logger.error(
-            f"Tentativa de salvar análise para conversa de WhatsApp inexistente: {conversation_jid}"
+            f"[{instance_name}] Tentativa de salvar análise para conversa inexistente: {conversation_jid}"
         )
         return
 
@@ -125,7 +152,6 @@ def save_whatsapp_analysis_results(
         analysis = models.WhatsappAnalysis(conversation_id=conversation.id)
         db.add(analysis)
 
-    # Atualiza os campos da análise
     analysis.extracted_data = analysis_data.get("extracted_data")
     analysis.temperature_assessment = analysis_data.get("temperature_analysis")
     analysis.director_decision = analysis_data.get("director_decision")
@@ -133,14 +159,12 @@ def save_whatsapp_analysis_results(
     analysis.context = analysis_data.get("context")
 
     logger.info(
-        f"Análise salva/atualizada para a conversa de WhatsApp {conversation_jid}."
+        f"[{instance_name}] Análise salva/atualizada para a conversa {conversation_jid}."
     )
     db.commit()
 
 
 # --- Funções do Departamento de E-mail ---
-
-
 def save_email_analysis_results(db: Session, analysis_data: dict):
     """
     Salva ou atualiza os resultados da análise de IA para uma thread de e-mail.
